@@ -1,0 +1,205 @@
+/* ==========================================================================
+   theme.css - Design tokens and theming
+   --------------------------------------------------------------------------
+   A single source of truth for colors, spacing, radii, shadows, typography,
+   and motion. Two themes (dark default + light) are expressed as CSS custom
+   properties on :root and [data-theme="light"]. Accent color is injected at
+   runtime from server config so it can be themed per deployment.
+   ========================================================================== */
+
+:root {
+  /* Color primitives - dark theme */
+  --bg-0: #0a0e17;
+  --bg-1: #0e1320;
+  --bg-2: #131a2a;
+  --bg-3: #1a2336;
+  --bg-elev: #161d2e;
+  --surface: rgba(24, 32, 51, 0.72);
+  --surface-solid: #182033;
+  --surface-hover: rgba(38, 50, 78, 0.65);
+  --border: rgba(255, 255, 255, 0.08);
+  --border-strong: rgba(255, 255, 255, 0.14);
+  --border-accent: rgba(91, 140, 255, 0.4);
+
+  /* Text */
+  --text-0: #f4f7ff;
+  --text-1: #c3ccdf;
+  --text-2: #8b96b0;
+  --text-3: #5c6683;
+  --text-inverse: #0a0e17;
+
+  /* Accent + semantic */
+  --accent: #5b8cff;
+  --accent-soft: rgba(91, 140, 255, 0.16);
+  --accent-strong: #7aa2ff;
+  --accent-glow: rgba(91, 140, 255, 0.45);
+
+  --success: #3ad29f;
+  --success-soft: rgba(58, 210, 159, 0.15);
+  --warning: #f5b342;
+  --warning-soft: rgba(245, 179, 66, 0.15);
+  --danger: #ff5c7a;
+  --danger-soft: rgba(255, 92, 122, 0.15);
+  --info: #4cc9f0;
+  --info-soft: rgba(76, 201, 240, 0.15);
+  --purple: #b388ff;
+  --pink: #ff7eb6;
+  --teal: #2dd4bf;
+  --amber: #fbbf24;
+
+  /* Metric series palette (used by charts) */
+  --series-cpu: #5b8cff;
+  --series-mem: #b388ff;
+  --series-swap: #ff7eb6;
+  --series-net-rx: #3ad29f;
+  --series-net-tx: #f5b342;
+  --series-disk-r: #4cc9f0;
+  --series-disk-w: #ff8c6b;
+  --series-load: #fbbf24;
+  --series-temp: #ff5c7a;
+
+  /* Spacing scale (4px base) */
+  --sp-1: 4px;
+  --sp-2: 8px;
+  --sp-3: 12px;
+  --sp-4: 16px;
+  --sp-5: 20px;
+  --sp-6: 24px;
+  --sp-8: 32px;
+  --sp-10: 40px;
+  --sp-12: 48px;
+  --sp-16: 64px;
+
+  /* Radii */
+  --radius-sm: 8px;
+  --radius-md: 12px;
+  --radius-lg: 16px;
+  --radius-xl: 22px;
+  --radius-full: 999px;
+
+  /* Shadows */
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.3);
+  --shadow-md: 0 6px 20px rgba(0, 0, 0, 0.35);
+  --shadow-lg: 0 18px 50px rgba(0, 0, 0, 0.5);
+  --shadow-glow: 0 0 0 1px var(--border-accent), 0 8px 30px var(--accent-glow);
+
+  /* Typography */
+  --font-sans: "Inter", ui-sans-serif, system-ui, -apple-system,
+    "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  --font-mono: "JetBrains Mono", "SF Mono", ui-monospace, "Cascadia Code",
+    Menlo, Consolas, monospace;
+
+  --fs-xs: 11px;
+  --fs-sm: 12px;
+  --fs-md: 13px;
+  --fs-base: 14px;
+  --fs-lg: 16px;
+  --fs-xl: 20px;
+  --fs-2xl: 26px;
+  --fs-3xl: 34px;
+  --fs-4xl: 46px;
+
+  --fw-normal: 400;
+  --fw-medium: 500;
+  --fw-semibold: 600;
+  --fw-bold: 700;
+
+  --lh-tight: 1.15;
+  --lh-normal: 1.5;
+
+  /* Motion */
+  --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+  --ease-in-out: cubic-bezier(0.65, 0, 0.35, 1);
+  --ease-spring: cubic-bezier(0.34, 1.56, 0.64, 1);
+  --dur-fast: 120ms;
+  --dur-base: 200ms;
+  --dur-slow: 400ms;
+
+  /* Layout metrics */
+  --sidebar-w: 248px;
+  --sidebar-w-collapsed: 76px;
+  --topbar-h: 64px;
+  --content-max: 1680px;
+
+  /* Backdrop blur for glass panels */
+  --glass-blur: saturate(160%) blur(14px);
+  color-scheme: dark;
+}
+
+/* Light theme overrides */
+[data-theme="light"] {
+  --bg-0: #eef1f7;
+  --bg-1: #f4f6fb;
+  --bg-2: #ffffff;
+  --bg-3: #e8ecf5;
+  --bg-elev: #ffffff;
+  --surface: rgba(255, 255, 255, 0.78);
+  --surface-solid: #ffffff;
+  --surface-hover: rgba(226, 232, 245, 0.8);
+  --border: rgba(15, 23, 42, 0.1);
+  --border-strong: rgba(15, 23, 42, 0.16);
+  --border-accent: rgba(59, 108, 231, 0.4);
+
+  --text-0: #0f172a;
+  --text-1: #33415c;
+  --text-2: #5c6683;
+  --text-3: #98a2b8;
+  --text-inverse: #ffffff;
+
+  --accent: #3b6ce7;
+  --accent-soft: rgba(59, 108, 231, 0.12);
+  --accent-strong: #2f57c4;
+  --accent-glow: rgba(59, 108, 231, 0.28);
+
+  --success: #12a877;
+  --warning: #d98a12;
+  --danger: #e13b5c;
+  --info: #1595c9;
+
+  --shadow-sm: 0 1px 2px rgba(15, 23, 42, 0.08);
+  --shadow-md: 0 6px 20px rgba(15, 23, 42, 0.1);
+  --shadow-lg: 0 18px 50px rgba(15, 23, 42, 0.16);
+
+  --glass-blur: saturate(140%) blur(12px);
+  color-scheme: light;
+}
+
+/* A dim "midnight" accent alternative selectable in settings */
+[data-accent="violet"] {
+  --accent: #b388ff;
+  --accent-soft: rgba(179, 136, 255, 0.16);
+  --accent-strong: #c9a7ff;
+  --accent-glow: rgba(179, 136, 255, 0.45);
+  --series-cpu: #b388ff;
+}
+[data-accent="emerald"] {
+  --accent: #3ad29f;
+  --accent-soft: rgba(58, 210, 159, 0.16);
+  --accent-strong: #57e0b3;
+  --accent-glow: rgba(58, 210, 159, 0.4);
+  --series-cpu: #3ad29f;
+}
+[data-accent="amber"] {
+  --accent: #f5b342;
+  --accent-soft: rgba(245, 179, 66, 0.16);
+  --accent-strong: #ffca6a;
+  --accent-glow: rgba(245, 179, 66, 0.4);
+  --series-cpu: #f5b342;
+}
+[data-accent="rose"] {
+  --accent: #ff5c7a;
+  --accent-soft: rgba(255, 92, 122, 0.16);
+  --accent-strong: #ff88a0;
+  --accent-glow: rgba(255, 92, 122, 0.4);
+  --series-cpu: #ff5c7a;
+}
+
+/* Reduced motion preference */
+@media (prefers-reduced-motion: reduce) {
+  * {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+    scroll-behavior: auto !important;
+  }
+}

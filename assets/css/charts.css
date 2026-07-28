@@ -1,0 +1,209 @@
+/* ==========================================================================
+   charts.css - Canvas chart containers, legends, axes, and gauges
+   ========================================================================== */
+
+.chart {
+  position: relative;
+  width: 100%;
+}
+.chart canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+.chart-lg {
+  height: 280px;
+}
+.chart-md {
+  height: 200px;
+}
+.chart-sm {
+  height: 140px;
+}
+.chart-xl {
+  height: 340px;
+}
+
+.chart-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-4);
+  margin-top: var(--sp-3);
+  font-size: var(--fs-sm);
+}
+.legend-item {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+  color: var(--text-2);
+  cursor: pointer;
+  transition: opacity var(--dur-fast);
+  user-select: none;
+}
+.legend-item.disabled {
+  opacity: 0.4;
+}
+.legend-swatch {
+  width: 12px;
+  height: 12px;
+  border-radius: 3px;
+  flex-shrink: 0;
+}
+.legend-item .lv {
+  color: var(--text-0);
+  font-weight: var(--fw-semibold);
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+/* Chart hover crosshair line drawn as an overlay element */
+.chart-crosshair {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 1px;
+  background: var(--border-strong);
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity var(--dur-fast);
+}
+.chart:hover .chart-crosshair.active {
+  opacity: 1;
+}
+
+/* Sparkline in stat tiles */
+.sparkline {
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+
+/* Gauge ring container */
+.gauge {
+  position: relative;
+  display: grid;
+  place-items: center;
+}
+.gauge canvas {
+  width: 100%;
+  height: auto;
+}
+
+/* Per-core CPU grid */
+.core-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
+  gap: var(--sp-3);
+}
+.core-cell {
+  background: var(--bg-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  padding: var(--sp-3);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  transition: border-color var(--dur-base);
+}
+.core-cell:hover {
+  border-color: var(--border-strong);
+}
+.core-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: var(--fs-xs);
+}
+.core-head .core-name {
+  color: var(--text-3);
+  font-weight: var(--fw-semibold);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+.core-head .core-val {
+  color: var(--text-0);
+  font-weight: var(--fw-bold);
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+.core-freq {
+  font-size: var(--fs-xs);
+  color: var(--text-3);
+  font-family: var(--font-mono);
+}
+
+/* Heatmap cells for per-core history */
+.heatmap {
+  display: grid;
+  gap: 2px;
+}
+.heatmap-cell {
+  border-radius: 2px;
+  aspect-ratio: 1;
+  transition: background 0.3s;
+}
+
+/* Big number readout beside a chart */
+.readout {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.readout .r-value {
+  font-size: var(--fs-2xl);
+  font-weight: var(--fw-bold);
+  color: var(--text-0);
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+}
+.readout .r-label {
+  font-size: var(--fs-xs);
+  color: var(--text-3);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+/* Network dual-direction bars */
+.dir-bar {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  font-size: var(--fs-sm);
+}
+.dir-bar .arrow {
+  width: 18px;
+  text-align: center;
+  font-weight: var(--fw-bold);
+}
+.dir-bar .arrow.down {
+  color: var(--series-net-rx);
+}
+.dir-bar .arrow.up {
+  color: var(--series-net-tx);
+}
+.dir-bar .track {
+  flex: 1;
+  height: 6px;
+  border-radius: var(--radius-full);
+  background: var(--bg-3);
+  overflow: hidden;
+}
+.dir-bar .track > i {
+  display: block;
+  height: 100%;
+  transition: width var(--dur-base) var(--ease-out);
+}
+.dir-bar .track.rx > i {
+  background: var(--series-net-rx);
+}
+.dir-bar .track.tx > i {
+  background: var(--series-net-tx);
+}
+.dir-bar .val {
+  width: 92px;
+  text-align: right;
+  font-family: var(--font-mono);
+  color: var(--text-0);
+  font-variant-numeric: tabular-nums;
+}

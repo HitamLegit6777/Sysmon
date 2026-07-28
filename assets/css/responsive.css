@@ -1,0 +1,109 @@
+/* ==========================================================================
+   responsive.css - Breakpoints and mobile adaptations
+   ========================================================================== */
+
+/* Mobile sidebar drawer scrim */
+.scrim {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.5);
+  backdrop-filter: blur(2px);
+  z-index: 25;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity var(--dur-base);
+}
+.scrim.show {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.menu-toggle {
+  display: none;
+}
+
+/* Large desktops: allow 5-wide stat rows */
+@media (min-width: 1600px) {
+  .grid-5 {
+    grid-template-columns: repeat(5, minmax(0, 1fr));
+  }
+}
+
+/* Tablets */
+@media (max-width: 1200px) {
+  .grid-4 {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .grid-3 {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .col-span-2 {
+    grid-column: span 1;
+  }
+}
+
+/* Small tablets / large phones: collapse to a drawer sidebar */
+@media (max-width: 900px) {
+  .app {
+    grid-template-columns: 1fr;
+  }
+  .app.sidebar-collapsed {
+    grid-template-columns: 1fr;
+  }
+  .sidebar {
+    position: fixed;
+    top: 0;
+    bottom: 0;
+    left: 0;
+    width: var(--sidebar-w);
+    transform: translateX(-100%);
+    transition: transform var(--dur-base) var(--ease-out);
+    z-index: 30;
+  }
+  .app.drawer-open .sidebar {
+    transform: translateX(0);
+    box-shadow: var(--shadow-lg);
+  }
+  .menu-toggle {
+    display: grid;
+  }
+  .content {
+    padding: var(--sp-4);
+  }
+  .grid-2,
+  .grid-3,
+  .grid-4 {
+    grid-template-columns: 1fr;
+  }
+  .topbar {
+    padding: 0 var(--sp-4);
+  }
+  .hide-mobile {
+    display: none !important;
+  }
+}
+
+/* Phones */
+@media (max-width: 560px) {
+  .stat-value {
+    font-size: var(--fs-2xl);
+  }
+  .page-title h1 {
+    font-size: var(--fs-lg);
+  }
+  .topbar-status .status-text {
+    display: none;
+  }
+  .search input {
+    width: 120px;
+  }
+  .card {
+    padding: var(--sp-4);
+  }
+  .chart-lg {
+    height: 220px;
+  }
+  .clock {
+    display: none;
+  }
+}
