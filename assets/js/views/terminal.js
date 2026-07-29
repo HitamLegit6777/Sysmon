@@ -1,62 +1,196 @@
 /**
  * terminal.js
  * -----------
- * A lightweight PTY terminal view. Connects to /shell/ws, streams keystrokes to
- * the server's shell, and renders output. To stay dependency-free it uses a
- * pre-formatted text buffer with a minimal ANSI SGR (color) and control
- * interpreter rather than bundling xterm.js.
+ * A real terminal, backed by xterm.js (vendored locally under /vendor). It is a
+ * full VT/ANSI emulator: cursor movement, line/screen clears, colors, TUI apps
+ * (top, vim, htop), history, tab-completion and progress bars all render exactly
+ * as they would in a native terminal. We do NOT re-implement any of that.
+ *
+ * Wire protocol (JSON text frames over /shell/ws):
+ *   client -> server: {type:"input", data} | {type:"resize", cols, rows}
+ *   server -> client: raw PTY bytes (text frames)
  *
  * Only reachable when the server was started with --enable-shell (the sidebar
- * link is hidden otherwise, and the socket itself is auth+flag gated).
+ * link is hidden otherwise, and the socket itself is auth + flag gated).
  */
 import { h, icon } from "../util.js";
 
-// Basic 16-color ANSI palette (SGR 30-37 / 90-97).
-const ANSI = [
-  "#1e1e28", "#f7768e", "#9ece6a", "#e0af68", "#7aa2f7", "#bb9af7", "#7dcfff", "#c0caf5",
-  "#414868", "#ff899d", "#b9f27c", "#ffc777", "#8db0ff", "#c9a9ff", "#a4e5ff", "#ffffff",
-];
+// Vendored xterm.js assets (UMD globals: window.Terminal, window.FitAddon).
+const XTERM_JS = "/vendor/xterm.js";
+const XTERM_CSS = "/vendor/xterm.css";
+const XTERM_FIT = "/vendor/xterm-addon-fit.js";
+
+let _loadPromise = null;
+
+/** Load xterm.js + fit addon + stylesheet once, resolving when globals exist. */
+function loadXterm() {
+  if (window.Terminal && window.FitAddon) return Promise.resolve();
+  if (_loadPromise) return _loadPromise;
+
+  const loadScript = (src) =>
+    new Promise((resolve, reject) => {
+      // Reuse an existing tag if present.
+      const existing = document.querySelector(`script[data-src="${src}"]`);
+      if (existing) {
+        if (existing.dataset.loaded === "1") return resolve();
+        existing.addEventListener("load", () => resolve());
+        existing.addEventListener("error", () => reject(new Error("load " + src)));
+        return;
+      }
+      const s = document.createElement("script");
+      s.src = src;
+      s.async = false;
+      s.dataset.src = src;
+      s.addEventListener("load", () => {
+        s.dataset.loaded = "1";
+        resolve();
+      });
+      s.addEventListener("error", () => reject(new Error("load " + src)));
+      document.head.appendChild(s);
+    });
+
+  const loadCss = (href) => {
+    if (document.querySelector(`link[data-href="${href}"]`)) return;
+    const l = document.createElement("link");
+    l.rel = "stylesheet";
+    l.href = href;
+    l.dataset.href = href;
+    document.head.appendChild(l);
+  };
+
+  loadCss(XTERM_CSS);
+  // xterm core must be present before the fit addon evaluates.
+  _loadPromise = loadScript(XTERM_JS)
+    .then(() => loadScript(XTERM_FIT))
+    .catch((e) => {
+      _loadPromise = null;
+      throw e;
+    });
+  return _loadPromise;
+}
 
 export class TerminalView {
   constructor() {
     this._ws = null;
-    this._out = null;
-    this._buf = "";
+    this._term = null;
+    this._fit = null;
+    this._ro = null;
     this._closed = false;
+    this._mount = null;
+    this._status = null;
+    this._onWinResize = null;
   }
 
   mount(container) {
     const view = h("div.view.terminal-view");
 
-    const status = h("span.term-status", { text: "connecting…" });
-    const clearBtn = h("button.btn.btn-ghost.btn-sm", { html: icon("refresh", 14) + "<span>Clear</span>", onclick: () => { this._out.textContent = ""; } });
+    const status = h("span.term-status", { text: "loading…" });
+    const clearBtn = h("button.btn.btn-ghost.btn-sm", {
+      html: icon("refresh", 14) + "<span>Clear</span>",
+      onclick: () => {
+        if (this._term) {
+          this._term.clear();
+          this._term.focus();
+        }
+      },
+    });
     const header = h("div.term-header", null, [
       h("div.term-dots", null, [h("i.term-dot.is-red"), h("i.term-dot.is-amber"), h("i.term-dot.is-green")]),
       h("span.term-title", null, [h("span", { html: icon("terminal", 15) }), h("span", { text: "server shell" })]),
       h("div.term-tools", null, [status, clearBtn]),
     ]);
 
-    this._out = h("pre.term-output", { tabindex: "0" });
-    const body = h("div.term-body", null, [this._out]);
+    // xterm mounts into this element and manages its own DOM/canvas.
+    const mountEl = h("div.term-xterm");
+    const body = h("div.term-body", null, [mountEl]);
 
     view.append(h("div.term-window", null, [header, body]));
     container.appendChild(view);
     this._status = status;
+    this._mount = mountEl;
 
-    this._connect();
+    loadXterm()
+      .then(() => {
+        if (this._closed) return;
+        this._initTerm();
+        this._connect();
+      })
+      .catch(() => {
+        this._status.textContent = "failed to load terminal";
+      });
+  }
 
-    // Capture keystrokes when the terminal has focus.
-    this._keyHandler = (e) => this._onKey(e);
-    this._out.addEventListener("keydown", this._keyHandler);
-    this._out.addEventListener("click", () => this._out.focus());
-    setTimeout(() => this._out.focus(), 50);
+  _initTerm() {
+    const term = new window.Terminal({
+      cursorBlink: true,
+      convertEol: false,
+      fontFamily:
+        'ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace',
+      fontSize: 13,
+      lineHeight: 1.2,
+      scrollback: 5000,
+      allowProposedApi: true,
+      theme: {
+        background: "#0b0e1a",
+        foreground: "#c0caf5",
+        cursor: "#7aa2f7",
+        cursorAccent: "#0b0e1a",
+        selectionBackground: "rgba(122,162,247,0.35)",
+        black: "#1e1e28",
+        red: "#f7768e",
+        green: "#9ece6a",
+        yellow: "#e0af68",
+        blue: "#7aa2f7",
+        magenta: "#bb9af7",
+        cyan: "#7dcfff",
+        white: "#c0caf5",
+        brightBlack: "#414868",
+        brightRed: "#ff899d",
+        brightGreen: "#b9f27c",
+        brightYellow: "#ffc777",
+        brightBlue: "#8db0ff",
+        brightMagenta: "#c9a9ff",
+        brightCyan: "#a4e5ff",
+        brightWhite: "#ffffff",
+      },
+    });
+    this._term = term;
 
-    // Handle paste.
-    this._pasteHandler = (e) => {
-      const text = (e.clipboardData || window.clipboardData).getData("text");
-      if (text) { this._send({ type: "input", data: text }); e.preventDefault(); }
-    };
-    this._out.addEventListener("paste", this._pasteHandler);
+    // Fit addon keeps cols/rows in sync with the container size.
+    const FitAddon =
+      (window.FitAddon && window.FitAddon.FitAddon) || window.FitAddon;
+    try {
+      this._fit = new FitAddon();
+      term.loadAddon(this._fit);
+    } catch {
+      this._fit = null;
+    }
+
+    term.open(this._mount);
+    this._safeFit();
+    term.focus();
+
+    // Every keystroke / paste xterm produces is forwarded verbatim to the PTY.
+    term.onData((data) => this._send({ type: "input", data }));
+    // If xterm's own resize fires (e.g. font metrics), tell the server.
+    term.onResize(({ cols, rows }) => this._send({ type: "resize", cols, rows }));
+
+    // Re-fit on container resize (sidebar toggles, window resize, etc.).
+    if (window.ResizeObserver) {
+      this._ro = new ResizeObserver(() => this._safeFit());
+      this._ro.observe(this._mount);
+    }
+    this._onWinResize = () => this._safeFit();
+    window.addEventListener("resize", this._onWinResize);
+  }
+
+  _safeFit() {
+    if (!this._fit || !this._term) return;
+    try {
+      this._fit.fit();
+    } catch {
+      /* fit can throw if the element has zero size during transitions */
+    }
   }
 
   _connect() {
@@ -67,17 +201,22 @@ export class TerminalView {
     ws.onopen = () => {
       this._status.textContent = "connected";
       this._status.classList.add("is-live");
-      this._sendResize();
+      // Send the true geometry so the remote PTY wraps correctly.
+      this._safeFit();
+      if (this._term) {
+        this._send({ type: "resize", cols: this._term.cols, rows: this._term.rows });
+      }
     };
     ws.onmessage = (ev) => {
-      const text = typeof ev.data === "string" ? ev.data : new TextDecoder().decode(ev.data);
-      this._write(text);
+      const text =
+        typeof ev.data === "string" ? ev.data : new TextDecoder().decode(ev.data);
+      if (this._term) this._term.write(text);
     };
     ws.onclose = () => {
       if (this._closed) return;
       this._status.textContent = "disconnected";
       this._status.classList.remove("is-live");
-      this._write("\r\n\x1b[90m[session closed]\x1b[0m\r\n");
+      if (this._term) this._term.write("\r\n\x1b[90m[session closed]\x1b[0m\r\n");
     };
     ws.onerror = () => {
       this._status.textContent = "error";
@@ -85,96 +224,32 @@ export class TerminalView {
   }
 
   _send(obj) {
-    if (this._ws && this._ws.readyState === WebSocket.OPEN) this._ws.send(JSON.stringify(obj));
-  }
-
-  _sendResize() {
-    // Estimate cols/rows from the output box using a monospace cell size.
-    const style = getComputedStyle(this._out);
-    const fontSize = parseFloat(style.fontSize) || 13;
-    const cellW = fontSize * 0.6;
-    const cellH = fontSize * 1.35;
-    const cols = Math.max(20, Math.floor(this._out.clientWidth / cellW));
-    const rows = Math.max(6, Math.floor(this._out.clientHeight / cellH));
-    this._send({ type: "resize", cols, rows });
-  }
-
-  _onKey(e) {
-    if (this._ws?.readyState !== WebSocket.OPEN) return;
-    // Let copy (Ctrl/Cmd+C with a selection) pass through to the browser.
-    if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "c" && String(getSelection())) return;
-    let data = null;
-    if (e.key === "Enter") data = "\r";
-    else if (e.key === "Backspace") data = "\x7f";
-    else if (e.key === "Tab") data = "\t";
-    else if (e.key === "Escape") data = "\x1b";
-    else if (e.key === "ArrowUp") data = "\x1b[A";
-    else if (e.key === "ArrowDown") data = "\x1b[B";
-    else if (e.key === "ArrowRight") data = "\x1b[C";
-    else if (e.key === "ArrowLeft") data = "\x1b[D";
-    else if (e.ctrlKey && e.key.length === 1) {
-      // Control characters (Ctrl+C, Ctrl+D, ...).
-      const code = e.key.toUpperCase().charCodeAt(0);
-      if (code >= 64 && code <= 95) data = String.fromCharCode(code - 64);
-    } else if (e.key.length === 1) data = e.key;
-
-    if (data !== null) {
-      this._send({ type: "input", data });
-      e.preventDefault();
+    if (this._ws && this._ws.readyState === WebSocket.OPEN) {
+      this._ws.send(JSON.stringify(obj));
     }
-  }
-
-  /**
-   * Minimal terminal writer: honours \r, \b, and a subset of ANSI SGR color
-   * codes; strips other escape sequences so raw control bytes don't leak.
-   */
-  _write(text) {
-    const out = this._out;
-    // Fast path: append with a light SGR → span transform.
-    const frag = document.createDocumentFragment();
-    // Split on ESC sequences.
-    const parts = text.split(/\x1b\[([0-9;]*)m/);
-    let curColor = null;
-    for (let i = 0; i < parts.length; i++) {
-      if (i % 2 === 1) {
-        // SGR parameters.
-        const codes = parts[i].split(";").filter(Boolean).map(Number);
-        if (codes.length === 0 || codes.includes(0)) curColor = null;
-        for (const c of codes) {
-          if (c >= 30 && c <= 37) curColor = ANSI[c - 30];
-          else if (c >= 90 && c <= 97) curColor = ANSI[c - 90 + 8];
-        }
-        continue;
-      }
-      let chunk = parts[i];
-      if (!chunk) continue;
-      // Strip other CSI/OSC sequences we don't render.
-      chunk = chunk.replace(/\x1b\][^\x07]*\x07/g, "").replace(/\x1b\[[0-9;?]*[A-Za-z]/g, "").replace(/\x1b[()][AB012]/g, "");
-      // Handle carriage-return by trimming back to line start is complex in a
-      // pre; for a monitor shell we simply normalize lone \r before \n away.
-      chunk = chunk.replace(/\r(?!\n)/g, "").replace(/\x07/g, "");
-      if (!chunk) continue;
-      if (curColor) {
-        frag.appendChild(h("span", { text: chunk, style: { color: curColor } }));
-      } else {
-        frag.appendChild(document.createTextNode(chunk));
-      }
-    }
-    out.appendChild(frag);
-    // Cap the scrollback to avoid unbounded growth.
-    const MAX = 4000;
-    while (out.childNodes.length > MAX) out.removeChild(out.firstChild);
-    out.scrollTop = out.scrollHeight;
   }
 
   update() {}
 
   unmount() {
     this._closed = true;
-    if (this._ws) { try { this._ws.close(); } catch {} }
-    if (this._out) {
-      this._out.removeEventListener("keydown", this._keyHandler);
-      this._out.removeEventListener("paste", this._pasteHandler);
+    if (this._onWinResize) window.removeEventListener("resize", this._onWinResize);
+    if (this._ro) {
+      try {
+        this._ro.disconnect();
+      } catch {}
     }
+    if (this._ws) {
+      try {
+        this._ws.close();
+      } catch {}
+    }
+    if (this._term) {
+      try {
+        this._term.dispose();
+      } catch {}
+    }
+    this._term = null;
+    this._ws = null;
   }
 }

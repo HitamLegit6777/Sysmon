@@ -55,6 +55,7 @@ pub fn build_router(state: AppState) -> Router {
         .route("/index.html", get(assets::asset_handler))
         .route("/css/{*path}", get(assets::asset_handler))
         .route("/js/{*path}", get(assets::asset_handler))
+        .route("/vendor/{*path}", get(assets::asset_handler))
         .nest("/api/auth", auth_routes)
         .nest("/api", api_routes)
         .fallback(get(assets::index))

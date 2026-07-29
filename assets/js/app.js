@@ -44,7 +44,12 @@ import { TerminalView } from "./views/terminal.js";
 
 function buildShell() {
   const app = qs("#app");
-  app.classList.add("app");
+  // Reset any leftover state from the login screen (showLogin sets
+  // class="auth-screen" and injects an auth background/shell). Without this
+  // the dashboard mounts underneath the auth layout and only appears correct
+  // after a manual refresh.
+  app.className = "app";
+  app.replaceChildren();
 
   const me = currentUser() || {};
   const sidebar = buildSidebar({ shellEnabled: !!me.shellEnabled });

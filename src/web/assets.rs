@@ -76,6 +76,11 @@ const ASSETS: &[Asset] = &[
     asset!("/js/app.js", "../../assets/js/app.js", "application/javascript; charset=utf-8"),
     asset!("/favicon.svg", "../../assets/favicon.svg", "image/svg+xml"),
     asset!("/manifest.webmanifest", "../../assets/manifest.webmanifest", "application/manifest+json"),
+    // Vendored terminal emulator (xterm.js) + fit addon, served locally so the
+    // build stays a single self-contained binary with no CDN/runtime deps.
+    asset!("/vendor/xterm.js", "../../assets/vendor/xterm.js", "application/javascript; charset=utf-8"),
+    asset!("/vendor/xterm.css", "../../assets/vendor/xterm.css", "text/css; charset=utf-8"),
+    asset!("/vendor/xterm-addon-fit.js", "../../assets/vendor/xterm-addon-fit.js", "application/javascript; charset=utf-8"),
 ];
 
 fn lookup(path: &str) -> Option<&'static Asset> {

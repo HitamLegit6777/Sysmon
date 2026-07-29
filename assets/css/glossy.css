@@ -272,21 +272,24 @@
 }
 .term-status.is-live { color: #7ee7b8; border-color: color-mix(in srgb, #3ad29f 40%, transparent); }
 .term-body { flex: 1; min-height: 0; }
-.term-output {
+/* xterm.js mounts here and manages its own canvas/rows. */
+.term-xterm {
   height: 100%;
-  margin: 0;
-  padding: 14px 16px;
-  overflow-y: auto;
-  font-family: "JetBrains Mono", "SFMono-Regular", ui-monospace, Menlo, Consolas, monospace;
-  font-size: 13px;
-  line-height: 1.5;
-  color: #c0caf5;
-  white-space: pre-wrap;
-  word-break: break-word;
-  outline: none;
-  caret-color: var(--accent);
+  width: 100%;
+  padding: 10px 12px;
+  overflow: hidden;
+  background: transparent;
 }
-.term-output::selection { background: color-mix(in srgb, var(--accent) 45%, transparent); }
+.term-xterm .xterm { height: 100%; }
+.term-xterm .xterm-viewport {
+  overflow-y: auto !important;
+  background: transparent !important;
+}
+.term-xterm .xterm-viewport::-webkit-scrollbar { width: 10px; }
+.term-xterm .xterm-viewport::-webkit-scrollbar-thumb {
+  background: color-mix(in srgb, var(--accent) 30%, transparent);
+  border-radius: var(--radius-full);
+}
 .btn.btn-sm { padding: 5px 10px; font-size: 12px; }
 .btn.btn-ghost {
   display: inline-flex; align-items: center; gap: 6px;
