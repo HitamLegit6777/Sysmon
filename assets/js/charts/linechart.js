@@ -27,6 +27,9 @@ export class LineChart {
     this.ySuffix = opts.ySuffix || "";
     this.yFormat = opts.yFormat || ((v) => String(Math.round(v)));
     this.tooltipFormat = opts.tooltipFormat || this.yFormat;
+    // Optional callback returning extra HTML (rows) appended below the series
+    // values in the tooltip, given the hovered sample index and its timestamp.
+    this.tooltipExtra = typeof opts.tooltipExtra === "function" ? opts.tooltipExtra : null;
     this.gridLines = opts.gridLines ?? 4;
     this.padding = Object.assign(
       { top: 12, right: 14, bottom: 22, left: 46 },
@@ -324,14 +327,24 @@ export class LineChart {
         const d = new Date(ts);
         head = `<div class="tt-head">${d.toLocaleTimeString()}</div>`;
       }
-      this.tooltip.innerHTML = head + rows;
+      let extra = "";
+      if (this.tooltipExtra) {
+        try { extra = this.tooltipExtra(idx, ts) || ""; } catch (_) { extra = ""; }
+        if (extra) extra = `<div class="tt-extra">${extra}</div>`;
+      }
+      this.tooltip.innerHTML = head + rows + extra;
       this.tooltip.classList.add("visible");
-      // Position tooltip near cursor but clamped to the viewport.
-      const tw = this.tooltip.offsetWidth || 120;
+      // Position tooltip near cursor but clamped to the viewport on both axes.
+      const tw = this.tooltip.offsetWidth || 140;
+      const th = this.tooltip.offsetHeight || 60;
       let tx = e.clientX + 14;
       if (tx + tw > window.innerWidth - 8) tx = e.clientX - tw - 14;
+      if (tx < 8) tx = 8;
+      let ty = e.clientY + 14;
+      if (ty + th > window.innerHeight - 8) ty = e.clientY - th - 14;
+      if (ty < 8) ty = 8;
       this.tooltip.style.left = tx + "px";
-      this.tooltip.style.top = e.clientY + 14 + "px";
+      this.tooltip.style.top = ty + "px";
     }
     this.draw();
   }

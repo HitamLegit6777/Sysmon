@@ -138,6 +138,16 @@ export class NetworkView {
         ySuffix: "",
         yFormat: (v) => fmtBytes(v, 0),
         tooltipFormat: (v) => fmtRate(v),
+        tooltipExtra: (i) => {
+          const h2 = store.get().history;
+          const rx = h2.netRx.slice(-600)[i];
+          const tx = h2.netTx.slice(-600)[i];
+          if (rx == null || tx == null) return "";
+          return (
+            `<div class="tt-row"><span class="tt-label">Total</span>` +
+            `<span class="tt-val">${fmtRate(rx + tx)}</span></div>`
+          );
+        },
       });
       this._refresh(store.get());
       this._updateChart();

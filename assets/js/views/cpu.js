@@ -113,6 +113,7 @@ export class CpuView {
         yMax: 100,
         ySuffix: "%",
         yFormat: (v) => String(Math.round(v)),
+        tooltipExtra: (i) => this._tooltipExtra(i),
       });
       this._refresh(store.get());
       this._updateChart();
@@ -154,6 +155,27 @@ export class CpuView {
     this.chart.setData(ts, [
       { key: "cpu", label: "Total", color: cssVar("--series-cpu"), values: cpu, fill: true },
     ]);
+  }
+
+  // Extra tooltip rows: temperature and load average at the hovered instant.
+  _tooltipExtra(i) {
+    const hist = store.get().history;
+    const temp = hist.temp.slice(-600);
+    const load = hist.load1.slice(-600);
+    const rows = [];
+    if (temp[i] != null && temp[i] > 0) {
+      rows.push(
+        `<div class="tt-row"><span class="tt-dot" style="background:${cssVar("--series-temp")}"></span>` +
+          `<span class="tt-label">Temp</span><span class="tt-val">${temp[i].toFixed(1)}\u00b0C</span></div>`
+      );
+    }
+    if (load[i] != null) {
+      rows.push(
+        `<div class="tt-row"><span class="tt-dot" style="background:${cssVar("--series-load")}"></span>` +
+          `<span class="tt-label">Load 1m</span><span class="tt-val">${load[i].toFixed(2)}</span></div>`
+      );
+    }
+    return rows.join("");
   }
 
   _refresh(state) {

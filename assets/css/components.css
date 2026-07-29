@@ -783,28 +783,69 @@ table.data tbody tr:last-child td {
   transition: opacity var(--dur-fast), transform var(--dur-fast);
   max-width: 260px;
 }
-.tooltip.show {
+.tooltip.show,
+.tooltip.visible {
   opacity: 1;
   transform: translateY(0);
 }
-.tooltip .tip-row {
+.tooltip .tip-row,
+.tooltip .tt-row {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: var(--sp-4);
+  line-height: 1.5;
 }
-.tooltip .tip-label {
+.tooltip .tip-label,
+.tooltip .tt-label {
   color: var(--text-3);
 }
-.tooltip .tip-value {
+.tooltip .tip-value,
+.tooltip .tt-val {
   font-family: var(--font-mono);
   color: var(--text-0);
   font-weight: var(--fw-semibold);
+  white-space: nowrap;
 }
-.tooltip .tip-title {
+.tooltip .tip-title,
+.tooltip .tt-head {
   font-weight: var(--fw-semibold);
   color: var(--text-0);
   margin-bottom: 4px;
+  font-family: var(--font-mono);
+  font-size: var(--fs-2xs, 10px);
+}
+.tooltip .tt-dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  margin-right: 6px;
+  flex: 0 0 auto;
+}
+.tooltip .tt-label {
+  flex: 1 1 auto;
+}
+/* Extra (contextual) section appended below the series values */
+.tooltip .tt-extra {
+  margin-top: 6px;
+  padding-top: 6px;
+  border-top: 1px solid var(--border);
+}
+.tooltip .tt-sub {
+  color: var(--text-3);
+  font-size: var(--fs-2xs, 10px);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  margin-bottom: 3px;
+}
+.tooltip .tt-proc {
+  color: var(--text-1);
+  max-width: 150px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  margin-right: var(--sp-4);
 }
 
 /* ---------- Empty / loading states ---------- */
@@ -1099,3 +1140,83 @@ select.select:focus {
   color: var(--text-0);
   background: var(--surface-hover);
 }
+
+/* ---------- Alert rule (expandable) ---------- */
+.rule-item {
+  border-bottom: 1px solid var(--border);
+}
+.rule-item:last-child { border-bottom: none; }
+.rule-item.firing { background: color-mix(in srgb, var(--danger) 7%, transparent); }
+.rule-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 6px;
+  cursor: pointer;
+  border-radius: var(--radius-sm);
+  transition: background var(--dur-fast);
+}
+.rule-head:hover { background: var(--surface-hover, rgba(255,255,255,0.04)); }
+.rule-head .chevron {
+  display: inline-flex;
+  color: var(--text-3);
+  transition: transform var(--dur-fast);
+}
+.rule-head .chevron.open { transform: rotate(90deg); color: var(--text-1); }
+.rule-detail {
+  padding: 4px 6px 14px 26px;
+  animation: ruleReveal var(--dur-fast) ease;
+}
+@keyframes ruleReveal {
+  from { opacity: 0; transform: translateY(-3px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+.rule-msg {
+  color: var(--text-2);
+  font-size: var(--fs-sm);
+  margin-bottom: 10px;
+}
+.rule-bar-wrap { margin-bottom: 12px; }
+.rule-bar-track {
+  position: relative;
+  height: 8px;
+  border-radius: 999px;
+  background: var(--bg-3, rgba(255,255,255,0.08));
+  overflow: hidden;
+}
+.rule-bar-fill {
+  position: absolute;
+  left: 0; top: 0; bottom: 0;
+  border-radius: 999px;
+  transition: width var(--dur-normal) ease;
+}
+.rule-bar-thr {
+  position: absolute;
+  top: -2px; bottom: -2px;
+  width: 2px;
+  background: var(--text-2);
+  opacity: 0.8;
+}
+.rule-bar-labels {
+  display: flex;
+  justify-content: space-between;
+  margin-top: 5px;
+  font-size: var(--fs-2xs, 10px);
+  color: var(--text-3);
+  font-family: var(--font-mono);
+}
+.rule-kv-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: 8px 16px;
+}
+.rule-kv {
+  display: flex;
+  justify-content: space-between;
+  gap: var(--sp-4);
+  font-size: var(--fs-xs);
+  padding: 3px 0;
+  border-bottom: 1px dashed var(--border);
+}
+.rule-kv .k { color: var(--text-3); }
+.rule-kv .v { color: var(--text-1); font-family: var(--font-mono); }

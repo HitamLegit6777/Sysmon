@@ -12,6 +12,9 @@ import {
   fmtDateTime,
   timeAgo,
   cssVar,
+  fmtPct,
+  usageColor,
+  clamp,
 } from "../util.js";
 import store from "../store.js";
 import { card, badge } from "../components/card.js";
@@ -19,6 +22,7 @@ import { card, badge } from "../components/card.js";
 export class AlertsView {
   constructor() {
     this._unsubs = [];
+    this._expanded = new Set();
   }
 
   mount(container) {
@@ -103,20 +107,90 @@ export class AlertsView {
             ? "danger"
             : "warning"
           : "neutral";
-        return h("div.row-between", { style: { padding: "8px 0", borderBottom: "1px solid var(--border)" } }, [
-          h("div.col", null, [
-            h("span.cell-strong", { text: r.id }),
-            h("span.text-3", { text: `${r.metric} ${r.operator} ${r.threshold}`, style: { fontSize: "11px" } }),
-          ]),
-          h("div.row.gap-2", null, [
-            value != null
-              ? h("span.mono.text-2", { text: String(value) })
-              : null,
-            badge(firing ? "firing" : "ok", firing ? kind : "success"),
-          ]),
-        ]);
+        const isOpen = this._expanded.has(r.id);
+
+        const header = h(
+          "div.rule-head",
+          {
+            role: "button",
+            title: "Click for details",
+            onClick: () => {
+              if (this._expanded.has(r.id)) this._expanded.delete(r.id);
+              else this._expanded.add(r.id);
+              this._refreshRules();
+            },
+          },
+          [
+            h("div.row.gap-2", { style: { minWidth: 0, alignItems: "center" } }, [
+              h("span.chevron" + (isOpen ? ".open" : ""), { html: icon("chevron", 14) }),
+              h("div.col", { style: { minWidth: 0 } }, [
+                h("span.cell-strong", { text: r.id }),
+                h("span.text-3", {
+                  text: `${r.metric} ${r.operator} ${r.threshold}`,
+                  style: { fontSize: "11px" },
+                }),
+              ]),
+            ]),
+            h("div.row.gap-2", { style: { alignItems: "center" } }, [
+              value != null ? h("span.mono.text-2", { text: this._fmtValue(r.metric, value) }) : null,
+              badge(firing ? "firing" : "ok", firing ? kind : "success"),
+            ]),
+          ]
+        );
+
+        const children = [header];
+        if (isOpen) children.push(this._ruleDetail(r, value, firing));
+        return h("div.rule-item" + (firing ? ".firing" : ""), null, children);
       })
     );
+  }
+
+  // Format a metric value with a sensible unit.
+  _fmtValue(metric, v) {
+    if (v == null) return "-";
+    if (metric.includes("Percent") || metric === "cpu.usage" || metric === "cpu.iowait")
+      return fmtPct(v, 1);
+    if (metric.includes("temp") || metric === "thermal.maxTemp") return v.toFixed(1) + "\u00b0C";
+    return String(v);
+  }
+
+  // Build the expandable detail panel for a rule.
+  _ruleDetail(r, value, firing) {
+    // Progress bar: how close current value is to threshold (0..1, clamped 1.3x).
+    const thr = Number(r.threshold) || 0;
+    const pct = thr > 0 && value != null ? clamp((value / thr) * 100, 0, 130) : 0;
+    const barColor = firing ? cssVar("--danger") : usageColor(Math.min(pct, 100));
+    const durSec = Math.round((r.durationMs || 0) / 1000);
+
+    const kv = (label, val) =>
+      h("div.rule-kv", null, [
+        h("span.k", { text: label }),
+        h("span.v", { text: val }),
+      ]);
+
+    return h("div.rule-detail", null, [
+      r.message ? h("div.rule-msg", { text: r.message }) : null,
+      // value vs threshold bar
+      h("div.rule-bar-wrap", null, [
+        h("div.rule-bar-track", null, [
+          h("i.rule-bar-fill", { style: { width: Math.min(pct, 100) + "%", background: barColor } }),
+          // threshold marker at value==threshold => 100/1.3 of a 130% scale
+          h("i.rule-bar-thr", { style: { left: (100 / 130) * 100 + "%" } }),
+        ]),
+        h("div.rule-bar-labels", null, [
+          h("span", { text: "now " + (value != null ? this._fmtValue(r.metric, value) : "-") }),
+          h("span", { text: "limit " + this._fmtValue(r.metric, thr) }),
+        ]),
+      ]),
+      h("div.rule-kv-grid", null, [
+        kv("Metric", r.metric),
+        kv("Condition", `${r.operator} ${r.threshold}`),
+        kv("Severity", r.severity),
+        kv("Sustained for", durSec > 0 ? durSec + "s" : "instant"),
+        kv("Current", value != null ? this._fmtValue(r.metric, value) : "n/a"),
+        kv("Status", firing ? "FIRING" : "OK"),
+      ]),
+    ]);
   }
 
   _refreshLog() {

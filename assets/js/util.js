@@ -166,6 +166,17 @@ export function truncate(str, maxLen) {
   return str.slice(0, Math.max(0, maxLen - 1)) + "…";
 }
 
+/** Escape a string for safe insertion into innerHTML. */
+export function escapeHtml(str) {
+  if (str == null) return "";
+  return String(str)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
 /** Average of an array. */
 export function avg(arr) {
   if (!arr || arr.length === 0) return 0;

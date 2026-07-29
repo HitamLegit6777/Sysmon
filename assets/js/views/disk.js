@@ -121,6 +121,16 @@ export class DiskView {
         yMin: 0,
         yFormat: (v) => fmtBytes(v, 0),
         tooltipFormat: (v) => fmtRate(v),
+        tooltipExtra: (i) => {
+          const h2 = store.get().history;
+          const r = h2.diskR.slice(-600)[i];
+          const w = h2.diskW.slice(-600)[i];
+          if (r == null || w == null) return "";
+          return (
+            `<div class="tt-row"><span class="tt-label">Total I/O</span>` +
+            `<span class="tt-val">${fmtRate(r + w)}</span></div>`
+          );
+        },
       });
       this._refresh(store.get());
       this._updateChart();

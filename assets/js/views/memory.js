@@ -15,6 +15,7 @@ import {
   usageColor,
   usageClass,
   clamp,
+  escapeHtml,
 } from "../util.js";
 import store from "../store.js";
 import { card, kvList, updateKvList, meter } from "../components/card.js";
@@ -104,6 +105,7 @@ export class MemoryView {
         yMax: 100,
         ySuffix: "%",
         yFormat: (v) => String(Math.round(v)),
+        tooltipExtra: (i) => this._tooltipExtra(i),
       });
       this._buildComposition();
       this._refresh(store.get());
@@ -113,6 +115,13 @@ export class MemoryView {
     this._unsubs.push(store.on("snapshot", () => this._refresh(store.get())));
     this._unsubs.push(store.on("historyPoint", () => this._updateChart()));
     this._refresh(store.get());
+
+    // Ask for a fresh process table so the chart tooltip can show top memory
+    // consumers, and refresh it periodically while this view is mounted.
+    import("../ws.js").then((m) => m.default.requestProcesses());
+    this._procTimer = setInterval(() => {
+      import("../ws.js").then((m) => m.default.requestProcesses());
+    }, 5000);
   }
 
   _legend() {
@@ -170,6 +179,27 @@ export class MemoryView {
       { key: "mem", label: "Memory", color: cssVar("--series-mem"), values: hist.mem.slice(-600), fill: true },
       { key: "swap", label: "Swap", color: cssVar("--series-swap"), values: hist.swap.slice(-600), fill: true },
     ]);
+  }
+
+  // Extra tooltip rows: the current top memory-consuming processes. The
+  // per-process history is only available for the latest sample, so this is
+  // shown as "top now" context.
+  _tooltipExtra(i) {
+    const st = store.get();
+    const procs = st.processes && st.processes.processes;
+    if (!procs || !procs.length) return "";
+    const top = procs
+      .slice()
+      .sort((a, b) => (b.rssBytes || 0) - (a.rssBytes || 0))
+      .slice(0, 3);
+    const rows = top
+      .map(
+        (p) =>
+          `<div class="tt-row"><span class="tt-proc">${escapeHtml(p.name)}</span>` +
+          `<span class="tt-val">${fmtBytes(p.rssBytes)}</span></div>`
+      )
+      .join("");
+    return `<div class="tt-sub">Top memory (now)</div>${rows}`;
   }
 
   _refresh(state) {
@@ -237,6 +267,7 @@ export class MemoryView {
   unmount() {
     for (const u of this._unsubs) u();
     this._unsubs = [];
+    if (this._procTimer) clearInterval(this._procTimer);
     if (this.gauge) this.gauge.destroy();
     if (this.chart) this.chart.destroy();
   }

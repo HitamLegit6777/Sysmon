@@ -164,6 +164,14 @@ export class OverviewView {
         yMax: 100,
         ySuffix: "%",
         yFormat: (v) => String(Math.round(v)),
+        tooltipExtra: (i) => {
+          const t = store.get().history.temp.slice(-600)[i];
+          if (t == null || t <= 0) return "";
+          return (
+            `<div class="tt-row"><span class="tt-dot" style="background:${cssVar("--series-temp")}"></span>` +
+            `<span class="tt-label">Temp</span><span class="tt-val">${t.toFixed(1)}\u00b0C</span></div>`
+          );
+        },
       });
       this.coreBars = new Bars(coreHost, {
         orientation: "vertical",
