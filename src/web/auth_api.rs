@@ -12,10 +12,12 @@ use axum::{
 use serde::Deserialize;
 use serde_json::json;
 
-const COOKIE_NAME: &str = "sysmon_session";
+pub const COOKIE_NAME: &str = "sysmon_session";
 
-/// Extract the session token from the Cookie header.
-fn token_from_request(req: &Request) -> Option<String> {
+/// Extract the session token from the Cookie header. Shared by the auth
+/// middleware and the WebSocket handlers (which authenticate at upgrade time
+/// rather than through the `require_auth` middleware).
+pub fn token_from_request(req: &Request) -> Option<String> {
     let cookies = req.headers().get(header::COOKIE)?.to_str().ok()?;
     for part in cookies.split(';') {
         let part = part.trim();

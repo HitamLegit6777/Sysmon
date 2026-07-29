@@ -7,17 +7,27 @@
 use crate::state::store::{AppState, StreamMessage};
 use axum::{
     extract::ws::{Message, WebSocket, WebSocketUpgrade},
-    extract::State,
-    response::IntoResponse,
+    extract::{Request, State},
+    http::StatusCode,
+    response::{IntoResponse, Response},
 };
 use serde_json::json;
 use std::sync::Arc;
 
-/// GET /ws - upgrade to a WebSocket connection.
+/// GET /ws - upgrade to a WebSocket connection. Requires a valid session
+/// cookie: the live stream carries the same system data as the protected REST
+/// API (process list, host info, network), so it must be gated identically.
 pub async fn handler(
     ws: WebSocketUpgrade,
     State(state): State<AppState>,
-) -> impl IntoResponse {
+    req: Request,
+) -> Response {
+    let authed = crate::web::auth_api::token_from_request(&req)
+        .and_then(|t| state.auth().validate(&t))
+        .is_some();
+    if !authed {
+        return (StatusCode::UNAUTHORIZED, "authentication required").into_response();
+    }
     ws.on_upgrade(move |socket| handle_socket(socket, state))
 }
 

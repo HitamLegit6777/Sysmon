@@ -15,7 +15,7 @@ use axum::{
     Router,
 };
 use tower_http::compression::CompressionLayer;
-use tower_http::cors::{Any, CorsLayer};
+use tower_http::cors::CorsLayer;
 
 /// Build the full application router.
 pub fn build_router(state: AppState) -> Router {
@@ -41,10 +41,14 @@ pub fn build_router(state: AppState) -> Router {
         .route("/username", post(auth_api::change_username).route_layer(middleware::from_fn_with_state(state.clone(), auth_api::require_auth)))
         .route("/preferences", post(auth_api::set_preferences).route_layer(middleware::from_fn_with_state(state.clone(), auth_api::require_auth)));
 
+    // The SPA is served from the same origin as the API, so no cross-origin
+    // access is needed. Restrict CORS to same-origin (do not advertise a
+    // permissive `Access-Control-Allow-Origin: *`), which — combined with the
+    // `SameSite=Lax` session cookie — keeps the authenticated API off-limits to
+    // other web origins.
     let cors = CorsLayer::new()
-        .allow_origin(Any)
-        .allow_methods(Any)
-        .allow_headers(Any);
+        .allow_methods([axum::http::Method::GET, axum::http::Method::POST])
+        .allow_headers([axum::http::header::CONTENT_TYPE]);
 
     let mut app = Router::new()
         .route("/", get(assets::index))

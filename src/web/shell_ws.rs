@@ -10,23 +10,10 @@ use axum::{
         ws::{Message, WebSocket, WebSocketUpgrade},
         Request, State,
     },
-    http::{header, StatusCode},
+    http::StatusCode,
     response::{IntoResponse, Response},
 };
 use futures::{sink::SinkExt, stream::StreamExt};
-
-const COOKIE_NAME: &str = "sysmon_session";
-
-fn token_from_headers(req: &Request) -> Option<String> {
-    let cookies = req.headers().get(header::COOKIE)?.to_str().ok()?;
-    for part in cookies.split(';') {
-        let part = part.trim();
-        if let Some(rest) = part.strip_prefix(&format!("{}=", COOKIE_NAME)) {
-            return Some(rest.to_string());
-        }
-    }
-    None
-}
 
 /// Upgrade to a shell WebSocket after checking the feature flag and session.
 pub async fn handler(
@@ -37,7 +24,7 @@ pub async fn handler(
     if !state.shell_enabled() {
         return (StatusCode::FORBIDDEN, "shell disabled").into_response();
     }
-    let authed = token_from_headers(&req)
+    let authed = crate::web::auth_api::token_from_request(&req)
         .and_then(|t| state.auth().validate(&t))
         .is_some();
     if !authed {
