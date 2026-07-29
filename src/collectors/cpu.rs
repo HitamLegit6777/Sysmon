@@ -6,7 +6,7 @@ use crate::state::metrics::{CoreUsage, CpuMetrics};
 use crate::util::procfs;
 
 /// Raw cumulative jiffie counters from a single `cpu` line in /proc/stat.
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Copy, Clone, Default)]
 struct CpuTimes {
     user: u64,
     nice: u64,
@@ -17,6 +17,9 @@ struct CpuTimes {
     softirq: u64,
     steal: u64,
     guest: u64,
+    // Parsed for a complete /proc/stat layout; guest_nice is already folded into
+    // `nice` by the kernel, so it is never used in utilization math.
+    #[allow(dead_code)]
     guest_nice: u64,
 }
 
