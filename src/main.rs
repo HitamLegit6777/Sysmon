@@ -13,6 +13,7 @@ struct Cli {
     config_path: Option<String>,
     host: Option<String>,
     port: Option<u16>,
+    enable_shell: bool,
     print_help: bool,
     print_version: bool,
 }
@@ -22,6 +23,7 @@ fn parse_cli() -> Cli {
         config_path: None,
         host: None,
         port: None,
+        enable_shell: false,
         print_help: false,
         print_version: false,
     };
@@ -31,6 +33,7 @@ fn parse_cli() -> Cli {
             "-h" | "--help" => cli.print_help = true,
             "-v" | "--version" => cli.print_version = true,
             "-c" | "--config" => cli.config_path = args.next(),
+            "--enable-shell" => cli.enable_shell = true,
             "--host" => cli.host = args.next(),
             "-p" | "--port" => {
                 cli.port = args.next().and_then(|s| s.parse().ok());
@@ -61,6 +64,7 @@ OPTIONS:\n\
     -p, --port <PORT>       Port to listen on (default 8088)\n\
         --host <HOST>       Host/interface to bind (default 0.0.0.0)\n\
     -c, --config <FILE>     Path to a JSON config file\n\
+        --enable-shell      Enable the web terminal (auth-gated; runs commands as this user)\n\
     -v, --version           Print version and exit\n\
     -h, --help              Print this help and exit\n\
 \n\
@@ -118,7 +122,13 @@ async fn main() -> ExitCode {
     let host = config.server.host.clone();
     let port = config.server.port;
 
-    let state = AppState::new(config);
+    let enable_shell = cli.enable_shell || std::env::var("SYSMON_ENABLE_SHELL").is_ok();
+    if enable_shell {
+        tracing::warn!(
+            "web shell ENABLED: authenticated users can run commands as this process's user"
+        );
+    }
+    let state = AppState::with_options(config, enable_shell, None);
     sysmon::sampler::spawn(state.clone());
 
     let app = web::build_router(state.clone());

@@ -39,6 +39,8 @@ pub struct AppState {
 
 struct Inner {
     config: Config,
+    auth: crate::auth::Auth,
+    enable_shell: bool,
     started_at: u64,
     snapshot: RwLock<MetricsSnapshot>,
     processes: RwLock<ProcessMetrics>,
@@ -55,12 +57,21 @@ struct Inner {
 impl AppState {
     /// Construct a new state store from configuration.
     pub fn new(config: Config) -> Self {
+        Self::with_options(config, false, None)
+    }
+
+    /// Construct with an explicit shell toggle and optional auth-file path.
+    pub fn with_options(config: Config, enable_shell: bool, auth_path: Option<std::path::PathBuf>) -> Self {
         let capacity = config.history.capacity_fast.max(60);
         let (stream_tx, _rx) = tokio::sync::broadcast::channel(256);
         let engine = AlertEngine::new(&config.alerts.rules);
+        let auth_path = auth_path.unwrap_or_else(|| std::path::PathBuf::from("sysmon-auth.json"));
+        let auth = crate::auth::Auth::load(auth_path);
         AppState {
             inner: Arc::new(Inner {
                 config,
+                auth,
+                enable_shell,
                 started_at: crate::state::now_millis(),
                 snapshot: RwLock::new(MetricsSnapshot::default()),
                 processes: RwLock::new(ProcessMetrics::default()),
@@ -73,6 +84,16 @@ impl AppState {
                 ws_messages_sent: AtomicU64::new(0),
             }),
         }
+    }
+
+    /// Shared authentication state.
+    pub fn auth(&self) -> &crate::auth::Auth {
+        &self.inner.auth
+    }
+
+    /// Whether the web shell feature is enabled.
+    pub fn shell_enabled(&self) -> bool {
+        self.inner.enable_shell
     }
 
     pub fn config(&self) -> &Config {

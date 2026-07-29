@@ -1,0 +1,8 @@
+{
+  "username": "admin",
+  "passwordHash": "$argon2id$v=19$m=19456,t=2,p=1$eA43Ppf7q4S5iU4YzMYkuQ$kMFQYlME3DhQOP6YZOqG//WuJJ44OiH/oSAliU6t71o",
+  "preferences": {
+    "theme": "light",
+    "accent": "emerald"
+  }
+}

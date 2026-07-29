@@ -28,11 +28,14 @@ const NAV = [
     items: [
       { path: "alerts", label: "Alerts", icon: "alerts", badge: "alerts" },
       { path: "info", label: "System Info", icon: "server" },
+      { path: "terminal", label: "Terminal", icon: "terminal", requiresShell: true },
+      { path: "profile", label: "Profile", icon: "user" },
     ],
   },
 ];
 
-export function buildSidebar() {
+export function buildSidebar(opts = {}) {
+  const shellEnabled = !!opts.shellEnabled;
   const navItems = new Map();
   const badges = new Map();
 
@@ -40,6 +43,7 @@ export function buildSidebar() {
   for (const group of NAV) {
     nav.appendChild(h("div.nav-section-label", { text: group.section }));
     for (const item of group.items) {
+      if (item.requiresShell && !shellEnabled) continue;
       const badgeEl = h("span.nav-badge.hidden", { text: "0" });
       if (item.badge) badges.set(item.badge, badgeEl);
       const el = h(

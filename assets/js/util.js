@@ -440,6 +440,16 @@ const ICON_PATHS = {
   wifi: '<path d="M5 12.5a10 10 0 0 1 14 0M8.5 16a5 5 0 0 1 7 0M12 19.5h.01"/>',
   battery:
     '<rect x="2" y="7" width="18" height="10" rx="2"/><path d="M22 10v4"/>',
+  terminal:
+    '<rect x="3" y="4" width="18" height="16" rx="2"/><path d="M7 9l3 3-3 3M13 15h4"/>',
+  user:
+    '<circle cx="12" cy="8" r="4"/><path d="M4 21a8 8 0 0 1 16 0"/>',
+  logout:
+    '<path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4M16 17l5-5-5-5M21 12H9"/>',
+  key:
+    '<circle cx="7.5" cy="15.5" r="4.5"/><path d="M10.5 12.5 21 2M17 6l3 3M14 9l3 3"/>',
+  palette:
+    '<circle cx="12" cy="12" r="9"/><circle cx="8" cy="10" r="1"/><circle cx="12" cy="8" r="1"/><circle cx="16" cy="10" r="1"/>',
 };
 
 /** Build an SVG icon string for the given name. */

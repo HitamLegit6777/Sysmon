@@ -14,6 +14,7 @@ import router from "./router.js";
 import { buildSidebar } from "./components/sidebar.js";
 import { buildTopbar } from "./components/topbar.js";
 import { notify } from "./components/toast.js";
+import { fetchMe, showLogin, currentUser } from "./components/auth.js";
 import {
   applyAllPrefs,
   toggleTheme,
@@ -38,12 +39,15 @@ import { ProcessesView } from "./views/processes.js";
 import { ThermalView } from "./views/thermal.js";
 import { AlertsView } from "./views/alerts.js";
 import { InfoView } from "./views/info.js";
+import { ProfileView } from "./views/profile.js";
+import { TerminalView } from "./views/terminal.js";
 
 function buildShell() {
   const app = qs("#app");
   app.classList.add("app");
 
-  const sidebar = buildSidebar();
+  const me = currentUser() || {};
+  const sidebar = buildSidebar({ shellEnabled: !!me.shellEnabled });
 
   const content = h("div.content", null, [h("div.content-inner#view-root")]);
   const topbar = buildTopbar({
@@ -80,6 +84,8 @@ function registerRoutes() {
   router.register("thermal", () => new ThermalView());
   router.register("alerts", () => new AlertsView());
   router.register("info", () => new InfoView());
+  router.register("profile", () => new ProfileView());
+  router.register("terminal", () => new TerminalView());
   router.setDefault("overview");
 }
 
@@ -228,7 +234,13 @@ function wireAlerts() {
   });
 }
 
-function boot() {
+function startDashboard() {
+  // Apply server-persisted preferences (falls back to localStorage defaults).
+  const me = currentUser();
+  if (me && me.preferences) {
+    if (me.preferences.theme) setPref("theme", me.preferences.theme);
+    if (me.preferences.accent) setPref("accent", me.preferences.accent);
+  }
   applyAllPrefs();
   const viewRoot = buildShell();
   registerRoutes();
@@ -239,7 +251,17 @@ function boot() {
   ws.connect();
 
   // Expose a tiny debug handle.
-  window.__sysmon = { store, ws, router, openPalette, openSettings };
+  window.__sysmon = { store, ws, router, openPalette, openSettings, currentUser };
+}
+
+async function boot() {
+  // Gate the entire app behind authentication.
+  const me = await fetchMe();
+  if (!me) {
+    showLogin(() => startDashboard());
+    return;
+  }
+  startDashboard();
 }
 
 if (document.readyState === "loading") {
