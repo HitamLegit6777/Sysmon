@@ -20,6 +20,8 @@ import store from "../store.js";
 import { card, kvList, updateKvList, badge } from "../components/card.js";
 import { DataTable } from "../components/table.js";
 import { LineChart } from "../charts/linechart.js";
+import { StackedBars } from "../charts/stackedbars.js";
+import { kpi } from "../components/widgets.js";
 
 export class NetworkView {
   constructor() {
@@ -28,6 +30,21 @@ export class NetworkView {
 
   mount(container) {
     const view = h("div.view");
+
+    this._kpis = {
+      down: kpi({ label: "Download", value: "0", unit: "B/s", icon: "download", accent: "accent" }),
+      up: kpi({ label: "Upload", value: "0", unit: "B/s", icon: "upload", accent: "accent" }),
+      conns: kpi({ label: "TCP Connections", value: "0", icon: "network" }),
+      listen: kpi({ label: "Listening Ports", value: "0", icon: "server" }),
+      ifaces: kpi({ label: "Interfaces Up", value: "0", icon: "wifi" }),
+    };
+    const kpiStrip = h("div.kpi-strip.section", null, [
+      this._kpis.down.el,
+      this._kpis.up.el,
+      this._kpis.conns.el,
+      this._kpis.listen.el,
+      this._kpis.ifaces.el,
+    ]);
 
     // Headline throughput.
     this.rxValue = h("div.r-value", { text: "0" });
@@ -67,6 +84,10 @@ export class NetworkView {
       ["Total TX", "0"],
     ]);
     const socketCard = card({ title: "Sockets", iconName: "wifi" }, [this.socketInfo]);
+
+    // Recent throughput (stacked RX/TX per sample bucket).
+    this.barsHost = h("div.chart", { style: { height: "150px" } });
+    const barsCard = card({ title: "Recent Throughput", iconName: "bar-chart" }, [this.barsHost]);
 
     // Interfaces table.
     this.table = new DataTable({
@@ -120,11 +141,13 @@ export class NetworkView {
     const tableCard = card({ title: "Interfaces", iconName: "network" }, [this.table.el]);
 
     view.append(
+      kpiStrip,
       h("div.grid.grid-3.section", null, [
         h("div", { style: { gridColumn: "span 2" } }, headCard),
         socketCard,
       ]),
       h("div.section", null, chartCard),
+      h("div.section", null, barsCard),
       h("div.section", null, tableCard)
     );
     container.appendChild(view);
@@ -133,6 +156,15 @@ export class NetworkView {
     this.sortDir = "desc";
 
     requestAnimationFrame(() => {
+      this.bars = new StackedBars(this.barsHost, {
+        stacked: true,
+        maxBars: 48,
+        series: [
+          { key: "rx", label: "Download", color: cssVar("--series-net-rx") },
+          { key: "tx", label: "Upload", color: cssVar("--series-net-tx") },
+        ],
+        valueFormat: (v) => fmtRate(v),
+      });
       this.chart = new LineChart(chartHost, {
         yMin: 0,
         ySuffix: "",
@@ -187,6 +219,12 @@ export class NetworkView {
       { key: "rx", label: "Download", color: cssVar("--series-net-rx"), values: hist.netRx.slice(-600), fill: true },
       { key: "tx", label: "Upload", color: cssVar("--series-net-tx"), values: hist.netTx.slice(-600), fill: true },
     ]);
+    if (this.bars) {
+      const rx = hist.netRx.slice(-48);
+      const tx = hist.netTx.slice(-48);
+      const bt = hist.t.slice(-48);
+      this.bars.setData(rx.map((v, i) => ({ t: bt[i], values: { rx: v || 0, tx: tx[i] || 0 } })));
+    }
   }
 
   _sortInterfaces(list) {
@@ -216,6 +254,17 @@ export class NetworkView {
     this.rxValue.innerHTML = `${rx.value}<span style="font-size:14px;color:var(--text-3)"> ${rx.unit}/s</span>`;
     this.txValue.innerHTML = `${tx.value}<span style="font-size:14px;color:var(--text-3)"> ${tx.unit}/s</span>`;
 
+    // KPI strip.
+    const ifaces = net.interfaces || [];
+    const upCount = ifaces.filter((i) => i.isUp).length;
+    this._kpis.down.update({ value: rx.value, sub: rx.unit + "/s" });
+    this._kpis.down.el.querySelector(".kpi-unit").textContent = rx.unit + "/s";
+    this._kpis.up.update({ value: tx.value, sub: tx.unit + "/s" });
+    this._kpis.up.el.querySelector(".kpi-unit").textContent = tx.unit + "/s";
+    this._kpis.conns.update({ value: fmtNum(net.tcpConnections), sub: fmtNum(net.udpConnections) + " UDP" });
+    this._kpis.listen.update({ value: fmtNum(net.tcpListening) });
+    this._kpis.ifaces.update({ value: upCount + " / " + ifaces.length });
+
     updateKvList(this.socketInfo, [
       fmtNum(net.tcpConnections),
       fmtNum(net.tcpListening),
@@ -235,6 +284,7 @@ export class NetworkView {
   unmount() {
     for (const u of this._unsubs) u();
     this._unsubs = [];
+    if (this.bars) this.bars.destroy();
     if (this.chart) this.chart.destroy();
   }
 }

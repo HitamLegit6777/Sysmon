@@ -23,6 +23,8 @@ import store from "../store.js";
 import { card, kvList, updateKvList } from "../components/card.js";
 import { DataTable } from "../components/table.js";
 import { LineChart } from "../charts/linechart.js";
+import { Donut } from "../charts/donut.js";
+import { kpi } from "../components/widgets.js";
 
 export class DiskView {
   constructor() {
@@ -32,12 +34,29 @@ export class DiskView {
   mount(container) {
     const view = h("div.view");
 
+    this._kpis = {
+      used: kpi({ label: "Storage Used", value: "0", unit: "%", icon: "disk", accent: "accent" }),
+      free: kpi({ label: "Free Space", value: "—", icon: "layers" }),
+      read: kpi({ label: "Read", value: "0", unit: "B/s", icon: "download", accent: "accent" }),
+      write: kpi({ label: "Write", value: "0", unit: "B/s", icon: "upload", accent: "accent" }),
+      mounts: kpi({ label: "Filesystems", value: "0", icon: "server" }),
+    };
+    const kpiStrip = h("div.kpi-strip.section", null, [
+      this._kpis.used.el,
+      this._kpis.free.el,
+      this._kpis.read.el,
+      this._kpis.write.el,
+      this._kpis.mounts.el,
+    ]);
+
     // Headline capacity + I/O.
     this.capValue = h("div.r-value", { text: "0" });
     this.readValue = h("div.r-value", { text: "0" });
     this.writeValue = h("div.r-value", { text: "0" });
+    this.capDonutHost = h("div.chart", { style: { width: "128px", height: "128px", flex: "0 0 128px" } });
     const headCard = card({ title: "Storage", iconName: "disk", accent: true }, [
-      h("div.row.gap-4.wrap", null, [
+      h("div.row.gap-4.wrap", { style: { alignItems: "center" } }, [
+        this.capDonutHost,
         h("div.readout", null, [this.capValue, h("div.r-label", { text: "Used capacity" })]),
         h("div.readout", null, [
           h("div.row.gap-2", null, [
@@ -109,6 +128,7 @@ export class DiskView {
     const devCard = card({ title: "Block Devices", iconName: "disk" }, [this.devTable.el]);
 
     view.append(
+      kpiStrip,
       h("div.section", null, headCard),
       h("div.section", null, chartCard),
       h("div.section", null, fsCard),
@@ -117,6 +137,7 @@ export class DiskView {
     container.appendChild(view);
 
     requestAnimationFrame(() => {
+      this.capDonut = new Donut(this.capDonutHost, { thickness: 14, centerSub: "used" });
       this.chart = new LineChart(chartHost, {
         yMin: 0,
         yFormat: (v) => fmtBytes(v, 0),
@@ -192,6 +213,33 @@ export class DiskView {
     this.readValue.innerHTML = `${rd.value}<span style="font-size:14px;color:var(--text-3)"> ${rd.unit}/s</span>`;
     this.writeValue.innerHTML = `${wr.value}<span style="font-size:14px;color:var(--text-3)"> ${wr.unit}/s</span>`;
 
+    // KPI strip.
+    const usedPct = d.maxUsedPercent || 0;
+    const freeBytes = (d.totalCapacity || 0) - (d.totalUsed || 0);
+    const fsCount = (d.filesystems || []).length;
+    this._kpis.used.update({
+      value: usedPct.toFixed(0),
+      accent: usedPct >= 90 ? "danger" : usedPct >= 75 ? "warn" : "accent",
+      sub: fmtBytes(d.totalUsed) + " / " + fmtBytes(d.totalCapacity),
+    });
+    this._kpis.free.update({ value: fmtBytes(freeBytes) });
+    this._kpis.read.update({ value: rd.value });
+    this._kpis.read.el.querySelector(".kpi-unit").textContent = rd.unit + "/s";
+    this._kpis.write.update({ value: wr.value });
+    this._kpis.write.el.querySelector(".kpi-unit").textContent = wr.unit + "/s";
+    this._kpis.mounts.update({ value: String(fsCount), sub: (d.devices || []).length + " devices" });
+
+    if (this.capDonut) {
+      const totalCap = d.totalCapacity || 1;
+      this.capDonut.setSegments(
+        [
+          { label: "Used", value: d.totalUsed || 0, color: usageColor(usedPct) },
+          { label: "Free", value: Math.max(0, freeBytes), color: cssVar("--bg-3") },
+        ],
+        { title: usedPct.toFixed(0) + "%", sub: "used" }
+      );
+    }
+
     if (this.legendVals.r) this.legendVals.r.textContent = fmtRate(d.totalReadBytesPerSec);
     if (this.legendVals.w) this.legendVals.w.textContent = fmtRate(d.totalWriteBytesPerSec);
 
@@ -204,6 +252,7 @@ export class DiskView {
   unmount() {
     for (const u of this._unsubs) u();
     this._unsubs = [];
+    if (this.capDonut) this.capDonut.destroy();
     if (this.chart) this.chart.destroy();
   }
 }

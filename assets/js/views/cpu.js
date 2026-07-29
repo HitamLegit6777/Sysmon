@@ -21,26 +21,40 @@ import {
 import store from "../store.js";
 import { card, kvList, updateKvList } from "../components/card.js";
 import { LineChart } from "../charts/linechart.js";
-import { Gauge } from "../charts/gauge.js";
+import { RadialGauge } from "../charts/radialgauge.js";
+import { kpi, meterRing, pill, sparkBar } from "../components/widgets.js";
+import { attachTooltip, attachContextMenu, tooltipCard } from "../components/tooltip.js";
+import { drawer } from "../components/primitives.js";
+import router from "../router.js";
 
 export class CpuView {
   constructor() {
     this._unsubs = [];
     this.coreCells = [];
+    this._kpis = {};
   }
 
   mount(container) {
     const view = h("div.view");
 
+    // KPI strip — headline metrics using the new widget layer.
+    this._kpis.usage = kpi({ label: "CPU Usage", value: "0", unit: "%", icon: "cpu", accent: "accent" });
+    this._kpis.load = kpi({ label: "Load (1m)", value: "0.00", icon: "activity" });
+    this._kpis.freq = kpi({ label: "Avg Frequency", value: "0", unit: "MHz", icon: "gauge" });
+    this._kpis.temp = kpi({ label: "Temperature", value: "—", unit: "°C", icon: "thermal" });
+    this._kpis.procs = kpi({ label: "Running / Blocked", value: "0 / 0", icon: "processes" });
+    const kpiStrip = h("div.kpi-strip.section", null, [
+      this._kpis.usage.el,
+      this._kpis.load.el,
+      this._kpis.freq.el,
+      this._kpis.temp.el,
+      this._kpis.procs.el,
+    ]);
+
     // Gauge + headline.
     const gaugeCanvas = h("canvas");
-    this.gaugeValue = h("div.big", { text: "0%" });
     const gaugeWrap = h("div.ring-wrap", { style: { height: "200px" } }, [
       h("div.gauge", { style: { width: "200px", height: "200px" } }, gaugeCanvas),
-      h("div.ring-center", null, [
-        this.gaugeValue,
-        h("div.small", { text: "CPU" }),
-      ]),
     ]);
     this.headStats = kvList([
       ["User", "0%"],
@@ -94,6 +108,7 @@ export class CpuView {
     ]);
 
     view.append(
+      kpiStrip,
       h("div.grid.grid-3.section", null, [
         h("div", { style: { gridColumn: "span 2" } }, gaugeCard),
         modelCard,
@@ -107,7 +122,7 @@ export class CpuView {
     container.appendChild(view);
 
     requestAnimationFrame(() => {
-      this.gauge = new Gauge(gaugeCanvas, { thickness: 16 });
+      this.gauge = new RadialGauge(gaugeCanvas, { thickness: 14, label: "CPU", unit: "%", threshold: 90 });
       this.chart = new LineChart(chartHost, {
         yMin: 0,
         yMax: 100,
@@ -184,8 +199,22 @@ export class CpuView {
     const c = snap.cpu;
 
     if (this.gauge) this.gauge.set(c.usage);
-    this.gaugeValue.textContent = fmtPct(c.usage, 0);
-    this.gaugeValue.style.color = usageColor(c.usage);
+
+    // KPI strip.
+    const load1 = snap.load ? snap.load.load1 : 0;
+    const temp =
+      snap.thermal && snap.thermal.maxTemp && snap.thermal.maxTemp > 0
+        ? snap.thermal.maxTemp
+        : null;
+    const accentFor = (v) => (v >= 90 ? "danger" : v >= 70 ? "warn" : "accent");
+    this._kpis.usage.update({ value: fmtPct(c.usage, 0).replace("%", ""), accent: accentFor(c.usage) });
+    this._kpis.load.update({ value: load1.toFixed(2), sub: c.coreCount + " cores" });
+    this._kpis.freq.update({ value: Math.round(c.avgFreqMhz) });
+    this._kpis.temp.update({
+      value: temp != null ? temp.toFixed(0) : "—",
+      accent: temp == null ? "accent" : temp >= 85 ? "danger" : temp >= 70 ? "warn" : "accent",
+    });
+    this._kpis.procs.update({ value: c.procsRunning + " / " + c.procsBlocked });
 
     updateKvList(this.headStats, [
       fmtPct(c.user, 1),
@@ -237,12 +266,33 @@ export class CpuView {
           freq,
         ]);
         this.coreGrid.appendChild(cell);
-        return { val, bar, freq };
+        const rec = { val, bar, freq, core: core.core, last: core };
+        // Rich hover tooltip with the live core reading.
+        attachTooltip(
+          cell,
+          () =>
+            tooltipCard({
+              title: "Core " + rec.core,
+              rows: [
+                { label: "Usage", value: fmtPct(rec.last.usage, 1), color: usageColor(rec.last.usage), strong: true },
+                { label: "Frequency", value: rec.last.freqMhz > 0 ? Math.round(rec.last.freqMhz) + " MHz" : "n/a" },
+              ],
+            }),
+          { delay: 200, place: "top" }
+        );
+        // Right-click actions.
+        attachContextMenu(cell, () => [
+          { header: "Core " + rec.core },
+          { label: "View processes", icon: "processes", onClick: () => router.navigate("processes") },
+          { label: "Open thermal", icon: "thermal", onClick: () => router.navigate("thermal") },
+        ]);
+        return rec;
       });
     }
     cores.forEach((core, i) => {
       const cell = this.coreCells[i];
       if (!cell) return;
+      cell.last = core;
       cell.val.textContent = fmtPct(core.usage, 0);
       cell.val.style.color = usageColor(core.usage);
       cell.bar.style.width = clamp(core.usage, 0, 100) + "%";

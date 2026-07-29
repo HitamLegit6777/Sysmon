@@ -14,6 +14,20 @@ import router from "./router.js";
 import { buildSidebar } from "./components/sidebar.js";
 import { buildTopbar } from "./components/topbar.js";
 import { notify } from "./components/toast.js";
+import {
+  applyAllPrefs,
+  toggleTheme,
+  openSettings,
+  setPref,
+  getPref,
+} from "./components/settings.js";
+import {
+  registerCommands,
+  registerShortcut,
+  installShortcuts,
+  openPalette,
+  openShortcutHelp,
+} from "./components/commandpalette.js";
 
 import { OverviewView } from "./views/overview.js";
 import { CpuView } from "./views/cpu.js";
@@ -25,25 +39,6 @@ import { ThermalView } from "./views/thermal.js";
 import { AlertsView } from "./views/alerts.js";
 import { InfoView } from "./views/info.js";
 
-const THEME_KEY = "sysmon.theme";
-const ACCENT_KEY = "sysmon.accent";
-
-function loadTheme() {
-  const saved = localStorage.getItem(THEME_KEY);
-  if (saved) document.documentElement.dataset.theme = saved;
-  const accent = localStorage.getItem(ACCENT_KEY);
-  if (accent) document.documentElement.dataset.accent = accent;
-}
-
-function toggleTheme() {
-  const cur = document.documentElement.dataset.theme || "dark";
-  const next = cur === "dark" ? "light" : "dark";
-  document.documentElement.dataset.theme = next;
-  localStorage.setItem(THEME_KEY, next);
-  const meta = document.querySelector('meta[name="theme-color"]');
-  if (meta) meta.content = next === "dark" ? "#0a0e17" : "#eef1f7";
-}
-
 function buildShell() {
   const app = qs("#app");
   app.classList.add("app");
@@ -54,6 +49,8 @@ function buildShell() {
   const topbar = buildTopbar({
     onToggleTheme: toggleTheme,
     onToggleMenu: () => app.classList.toggle("drawer-open"),
+    onOpenSettings: openSettings,
+    onOpenPalette: openPalette,
   });
   const main = h("div.main", null, [topbar, content]);
 
@@ -84,6 +81,115 @@ function registerRoutes() {
   router.register("alerts", () => new AlertsView());
   router.register("info", () => new InfoView());
   router.setDefault("overview");
+}
+
+/* Register command-palette entries and global keyboard shortcuts. */
+function wireCommands() {
+  const navs = [
+    ["overview", "Overview", "dashboard", "g o"],
+    ["cpu", "CPU", "cpu", "g c"],
+    ["memory", "Memory", "memory", "g m"],
+    ["network", "Network", "network", "g n"],
+    ["disk", "Disk", "disk", "g d"],
+    ["processes", "Processes", "processes", "g p"],
+    ["thermal", "Thermal", "thermal", "g t"],
+    ["alerts", "Alerts", "alerts", "g a"],
+    ["info", "System Info", "info", "g i"],
+  ];
+  registerCommands(
+    navs.map(([id, title, icon, shortcut]) => ({
+      id: "nav-" + id,
+      title: "Go to " + title,
+      subtitle: "Navigation",
+      section: "Navigate",
+      icon,
+      shortcut,
+      keywords: [id, title],
+      run: () => router.navigate(id),
+    }))
+  );
+  registerCommands([
+    {
+      id: "toggle-theme",
+      title: "Toggle light / dark theme",
+      section: "Actions",
+      icon: "sun",
+      keywords: ["theme", "dark", "light", "appearance"],
+      run: () => toggleTheme(),
+    },
+    {
+      id: "open-settings",
+      title: "Open settings",
+      section: "Actions",
+      icon: "settings",
+      shortcut: ",",
+      keywords: ["preferences", "config", "accent", "density"],
+      run: () => openSettings(),
+    },
+    {
+      id: "toggle-pause",
+      title: "Pause / resume live stream",
+      section: "Actions",
+      icon: "pause",
+      keywords: ["freeze", "stop", "stream"],
+      run: () => window.dispatchEvent(new CustomEvent("sysmon:toggle-pause")),
+    },
+    {
+      id: "cycle-density",
+      title: "Cycle UI density",
+      section: "Actions",
+      icon: "layers",
+      keywords: ["compact", "cozy", "comfy", "spacing"],
+      run: () => {
+        const order = ["compact", "cozy", "comfy"];
+        const cur = getPref("density");
+        setPref("density", order[(order.indexOf(cur) + 1) % order.length]);
+      },
+    },
+    {
+      id: "show-shortcuts",
+      title: "Show keyboard shortcuts",
+      section: "Help",
+      icon: "info",
+      shortcut: "?",
+      keywords: ["help", "keys", "hotkeys"],
+      run: () => openShortcutHelp(),
+    },
+  ]);
+
+  // Global shortcuts.
+  registerShortcut({ combo: "mod+k", description: "Open command palette", group: "General", handler: () => openPalette(), allowInInput: true });
+  registerShortcut({ combo: "?", description: "Show keyboard shortcuts", group: "General", handler: () => openShortcutHelp() });
+  registerShortcut({ combo: ",", description: "Open settings", group: "General", handler: () => openSettings() });
+  registerShortcut({ combo: "shift+t", description: "Toggle theme", group: "General", handler: () => toggleTheme() });
+  registerShortcut({ combo: "space", description: "Pause / resume stream", group: "General", handler: (e) => { e.preventDefault(); window.dispatchEvent(new CustomEvent("sysmon:toggle-pause")); } });
+
+  // "g" then a letter jumps to a section (vim-style).
+  const gMap = { o: "overview", c: "cpu", m: "memory", n: "network", d: "disk", p: "processes", t: "thermal", a: "alerts", i: "info" };
+  let gPending = false;
+  let gTimer = null;
+  document.addEventListener("keydown", (e) => {
+    const tag = (e.target && e.target.tagName) || "";
+    if (/INPUT|TEXTAREA|SELECT/.test(tag) || (e.target && e.target.isContentEditable)) return;
+    if (gPending) {
+      const dest = gMap[e.key.toLowerCase()];
+      gPending = false;
+      clearTimeout(gTimer);
+      if (dest) {
+        e.preventDefault();
+        router.navigate(dest);
+      }
+      return;
+    }
+    if (e.key === "g" && !e.ctrlKey && !e.metaKey && !e.altKey) {
+      gPending = true;
+      gTimer = setTimeout(() => (gPending = false), 900);
+    }
+  });
+  Object.entries(gMap).forEach(([k, dest]) => {
+    registerShortcut({ combo: "g " + k, description: "Go to " + dest, group: "Navigate", handler: () => {}, when: () => false });
+  });
+  installShortcuts();
 }
 
 function wireStoreToRouter() {
@@ -123,16 +229,17 @@ function wireAlerts() {
 }
 
 function boot() {
-  loadTheme();
+  applyAllPrefs();
   const viewRoot = buildShell();
   registerRoutes();
+  wireCommands();
   wireStoreToRouter();
   wireAlerts();
   router.start(viewRoot);
   ws.connect();
 
   // Expose a tiny debug handle.
-  window.__sysmon = { store, ws, router };
+  window.__sysmon = { store, ws, router, openPalette, openSettings };
 }
 
 if (document.readyState === "loading") {

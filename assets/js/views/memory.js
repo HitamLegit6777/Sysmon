@@ -21,6 +21,8 @@ import store from "../store.js";
 import { card, kvList, updateKvList, meter } from "../components/card.js";
 import { LineChart } from "../charts/linechart.js";
 import { Gauge } from "../charts/gauge.js";
+import { Donut } from "../charts/donut.js";
+import { kpi } from "../components/widgets.js";
 
 export class MemoryView {
   constructor() {
@@ -29,6 +31,21 @@ export class MemoryView {
 
   mount(container) {
     const view = h("div.view");
+
+    this._kpis = {
+      used: kpi({ label: "Memory Used", value: "0", unit: "%", icon: "memory", accent: "accent" }),
+      avail: kpi({ label: "Available", value: "—", icon: "layers" }),
+      swap: kpi({ label: "Swap Used", value: "0", unit: "%", icon: "disk" }),
+      cache: kpi({ label: "Cache + Buffers", value: "—", icon: "activity" }),
+      commit: kpi({ label: "Committed", value: "—", icon: "server" }),
+    };
+    const kpiStrip = h("div.kpi-strip.section", null, [
+      this._kpis.used.el,
+      this._kpis.avail.el,
+      this._kpis.swap.el,
+      this._kpis.cache.el,
+      this._kpis.commit.el,
+    ]);
 
     const gaugeCanvas = h("canvas");
     this.gaugeValue = h("div.big", { text: "0%" });
@@ -50,12 +67,14 @@ export class MemoryView {
       ]),
     ]);
 
-    // Composition stacked bar.
-    this.compBar = h("div.progress-segmented", { style: { height: "22px" } });
-    this.compLegend = h("div.chart-legend");
+    // Composition donut (used / cached / buffers / free).
+    this.compDonutHost = h("div.chart", { style: { width: "180px", height: "180px", flex: "0 0 180px" } });
+    this.compLegend = h("div.chart-legend.flex-1");
     const compCard = card({ title: "Composition", iconName: "layers" }, [
-      this.compBar,
-      this.compLegend,
+      h("div.row.gap-4", { style: { alignItems: "center" } }, [
+        this.compDonutHost,
+        this.compLegend,
+      ]),
     ]);
 
     // Swap meters.
@@ -88,6 +107,7 @@ export class MemoryView {
     const detailCard = card({ title: "Details", iconName: "info" }, [this.detail]);
 
     view.append(
+      kpiStrip,
       h("div.grid.grid-3.section", null, [
         h("div", { style: { gridColumn: "span 2" } }, gaugeCard),
         swapCard,
@@ -100,6 +120,7 @@ export class MemoryView {
 
     requestAnimationFrame(() => {
       this.gauge = new Gauge(gaugeCanvas, { thickness: 16 });
+      this.compDonut = new Donut(this.compDonutHost, { thickness: 20, centerSub: "RAM" });
       this.chart = new LineChart(chartHost, {
         yMin: 0,
         yMax: 100,
@@ -147,18 +168,14 @@ export class MemoryView {
 
   _buildComposition() {
     this.compSegs = {};
-    const parts = [
+    this._compParts = [
       ["used", "Used", cssVar("--series-cpu")],
       ["cached", "Cached", cssVar("--series-mem")],
       ["buffers", "Buffers", cssVar("--info")],
       ["free", "Free", cssVar("--bg-3")],
     ];
-    this.compBar.replaceChildren();
     this.compLegend.replaceChildren();
-    for (const [key, label, color] of parts) {
-      const seg = h("div.seg", { style: { background: color, flex: "0 0 0%" } });
-      this.compSegs[key] = seg;
-      this.compBar.appendChild(seg);
+    for (const [key, label, color] of this._compParts) {
       const v = h("span.lv", { text: "0" });
       this.compSegs[key + "_v"] = v;
       this.compLegend.appendChild(
@@ -211,6 +228,19 @@ export class MemoryView {
     this.gaugeValue.textContent = fmtPct(m.usedPercent, 0);
     this.gaugeValue.style.color = usageColor(m.usedPercent);
 
+    // KPI strip.
+    const memAccent = m.usedPercent >= 90 ? "danger" : m.usedPercent >= 75 ? "warn" : "accent";
+    this._kpis.used.update({ value: fmtPct(m.usedPercent, 0).replace("%", ""), accent: memAccent, sub: fmtBytes(m.used) + " / " + fmtBytes(m.total) });
+    this._kpis.avail.update({ value: fmtBytes(m.available) });
+    const swapPct = m.swapUsedPercent || 0;
+    this._kpis.swap.update({
+      value: m.swapTotal > 0 ? fmtPct(swapPct, 0).replace("%", "") : "0",
+      accent: swapPct >= 50 ? "warn" : "accent",
+      sub: m.swapTotal > 0 ? fmtBytes(m.swapUsed) + " / " + fmtBytes(m.swapTotal) : "no swap",
+    });
+    this._kpis.cache.update({ value: fmtBytes((m.cached || 0) + (m.buffers || 0)) });
+    this._kpis.commit.update({ value: fmtBytes(m.committedAs || 0), sub: m.commitLimit ? "limit " + fmtBytes(m.commitLimit) : "" });
+
     updateKvList(this.headStats, [
       fmtBytes(m.total),
       fmtBytes(m.used),
@@ -223,15 +253,16 @@ export class MemoryView {
     if (this.compSegs) {
       const total = m.total || 1;
       const free = Math.max(0, m.total - m.used - m.cached - m.buffers);
-      const set = (key, bytes) => {
-        const pct = (bytes / total) * 100;
-        if (this.compSegs[key]) this.compSegs[key].style.flex = `0 0 ${pct}%`;
-        if (this.compSegs[key + "_v"]) this.compSegs[key + "_v"].textContent = fmtBytes(bytes);
-      };
-      set("used", m.used);
-      set("cached", m.cached);
-      set("buffers", m.buffers);
-      set("free", free);
+      const values = { used: m.used, cached: m.cached, buffers: m.buffers, free };
+      for (const key of ["used", "cached", "buffers", "free"]) {
+        if (this.compSegs[key + "_v"]) this.compSegs[key + "_v"].textContent = fmtBytes(values[key]);
+      }
+      if (this.compDonut && this._compParts) {
+        this.compDonut.setSegments(
+          this._compParts.map(([key, label, color]) => ({ label, value: values[key], color })),
+          { title: fmtPct((m.used / total) * 100, 0), sub: "used" }
+        );
+      }
     }
 
     // Swap.
@@ -269,6 +300,7 @@ export class MemoryView {
     this._unsubs = [];
     if (this._procTimer) clearInterval(this._procTimer);
     if (this.gauge) this.gauge.destroy();
+    if (this.compDonut) this.compDonut.destroy();
     if (this.chart) this.chart.destroy();
   }
 }

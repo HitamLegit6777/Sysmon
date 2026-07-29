@@ -67,7 +67,13 @@ export function buildTopbar(options = {}) {
   const settingsBtn = h("button.icon-btn", {
     title: "Settings",
     html: icon("settings", 20),
-    onClick: () => router.navigate("info"),
+    onClick: () => options.onOpenSettings && options.onOpenSettings(),
+  });
+
+  const paletteBtn = h("button.icon-btn.palette-btn", {
+    title: "Command palette (Ctrl+K)",
+    html: icon("search", 20),
+    onClick: () => options.onOpenPalette && options.onOpenPalette(),
   });
 
   const el = h("header.topbar", null, [
@@ -77,8 +83,11 @@ export function buildTopbar(options = {}) {
     h("div.row.gap-2.hide-mobile", null, [cpuChip.el, memChip.el, netChip.el]),
     statusPill,
     clock,
-    h("div.row.gap-2", null, [pauseBtn, themeBtn, settingsBtn]),
+    h("div.row.gap-2", null, [paletteBtn, pauseBtn, themeBtn, settingsBtn]),
   ]);
+
+  // Allow external (keyboard/command) pause toggles to sync this button.
+  window.addEventListener("sysmon:toggle-pause", () => togglePause(pauseBtn));
 
   // Title updates on route change.
   const setTitle = (path) => {

@@ -17,6 +17,7 @@ import {
 import store from "../store.js";
 import { card, kvList, updateKvList, meter, badge } from "../components/card.js";
 import { LineChart } from "../charts/linechart.js";
+import { kpi, meterRing } from "../components/widgets.js";
 
 export class ThermalView {
   constructor() {
@@ -27,6 +28,21 @@ export class ThermalView {
 
   mount(container) {
     const view = h("div.view");
+
+    this._kpis = {
+      max: kpi({ label: "Max Temp", value: "0", unit: "°C", icon: "thermal", accent: "accent" }),
+      avg: kpi({ label: "Average Temp", value: "0", unit: "°C", icon: "activity" }),
+      zones: kpi({ label: "Thermal Zones", value: "0", icon: "layers" }),
+      battery: kpi({ label: "Battery", value: "—", icon: "battery" }),
+      power: kpi({ label: "Power Source", value: "—", icon: "server" }),
+    };
+    const kpiStrip = h("div.kpi-strip.section", null, [
+      this._kpis.max.el,
+      this._kpis.avg.el,
+      this._kpis.zones.el,
+      this._kpis.battery.el,
+      this._kpis.power.el,
+    ]);
 
     // Max temp headline.
     this.maxValue = h("div.r-value", { text: "0°C" });
@@ -55,6 +71,7 @@ export class ThermalView {
     const coolingCard = card({ title: "Cooling Devices", iconName: "chip" }, [this.coolingWrap]);
 
     view.append(
+      kpiStrip,
       h("div.grid.grid-3.section", null, [
         h("div", { style: { gridColumn: "span 2" } }, headCard),
         powerCard,
@@ -98,6 +115,30 @@ export class ThermalView {
     this.maxValue.textContent = (t.maxTemp || 0).toFixed(1) + "°C";
     this.maxValue.style.color = usageColor(clamp(t.maxTemp, 0, 100));
     this.avgValue.textContent = (t.avgTemp || 0).toFixed(1) + "°C";
+
+    // KPI strip.
+    const maxT = t.maxTemp || 0;
+    this._kpis.max.update({
+      value: maxT.toFixed(0),
+      accent: maxT >= 85 ? "danger" : maxT >= 70 ? "warn" : "accent",
+    });
+    this._kpis.avg.update({ value: (t.avgTemp || 0).toFixed(0) });
+    this._kpis.zones.update({ value: String((t.zones || []).length), sub: (t.cooling || []).length + " cooling" });
+    if (t.batteryPresent) {
+      this._kpis.battery.update({
+        value: (t.batteryPercent != null ? t.batteryPercent.toFixed(0) : "—"),
+        accent: t.batteryPercent != null && t.batteryPercent < 20 ? "danger" : "accent",
+        sub: t.batteryStatus || "",
+      });
+      const bu = this._kpis.battery.el.querySelector(".kpi-unit");
+      if (!bu) {
+        const mid = this._kpis.battery.el.querySelector(".kpi-mid");
+        if (mid) mid.appendChild(h("span.kpi-unit", { text: "%" }));
+      }
+    } else {
+      this._kpis.battery.update({ value: "N/A", sub: "no battery" });
+    }
+    this._kpis.power.update({ value: t.onAcPower ? "AC" : "Battery", sub: t.onAcPower ? "plugged in" : "on battery" });
 
     this._updateZones(t.zones || []);
     this._updateCooling(t.cooling || []);

@@ -21,6 +21,10 @@ import {
 import store from "../store.js";
 import { card, badge } from "../components/card.js";
 import { DataTable } from "../components/table.js";
+import { drawer } from "../components/primitives.js";
+import { attachContextMenu, contextMenu } from "../components/tooltip.js";
+import { statGrid, pill, progressBar } from "../components/widgets.js";
+import { fmtBytes as _fmtBytes } from "../util.js";
 
 export class ProcessesView {
   constructor() {
@@ -117,6 +121,21 @@ export class ProcessesView {
     );
     container.appendChild(view);
 
+    // Click a row to open a detail drawer; right-click for quick actions.
+    this.table.onRowClick((row) => this._openDetail(row));
+    attachContextMenu(this.table.el, (e) => {
+      const tr = e.target.closest("tr[data-rowkey], tr");
+      const pidText = tr && tr.querySelector("td");
+      const row = this._rowFromEvent(e);
+      if (!row) return [];
+      return [
+        { header: row.name + " (" + row.pid + ")" },
+        { label: "View details", icon: "info", onClick: () => this._openDetail(row) },
+        { label: "Copy PID", icon: "layers", onClick: () => navigator.clipboard && navigator.clipboard.writeText(String(row.pid)) },
+        { label: "Copy command", icon: "processes", onClick: () => navigator.clipboard && navigator.clipboard.writeText(row.cmdline || row.name) },
+      ];
+    });
+
     this._unsubs.push(store.on("processes", () => this._refresh()));
     this._refresh();
 
@@ -133,6 +152,64 @@ export class ProcessesView {
     this.counts.threads.textContent = fmtNum(procs.totalThreads);
     this.counts.zombie.textContent = fmtNum(procs.zombie);
     this._updateTable();
+  }
+
+  _rowFromEvent(e) {
+    const procs = store.get().processes;
+    if (!procs || !procs.processes) return null;
+    const tr = e.target.closest("tr");
+    if (!tr) return null;
+    // find the pid cell (first numeric-looking cell)
+    const cells = tr.querySelectorAll("td");
+    for (const c of cells) {
+      const n = parseInt(c.textContent, 10);
+      if (!Number.isNaN(n)) {
+        const found = procs.processes.find((p) => p.pid === n);
+        if (found) return found;
+      }
+    }
+    return null;
+  }
+
+  _openDetail(row) {
+    if (!row) return;
+    const stateLabel = { R: "Running", S: "Sleeping", D: "Uninterruptible", Z: "Zombie", T: "Stopped", I: "Idle" };
+    const cpuBar = progressBar({ label: "CPU", value: row.cpuPercent, max: 100, right: fmtPct(row.cpuPercent, 1) });
+    const memBar = progressBar({ label: "Memory", value: row.memPercent, max: 100, right: fmtPct(row.memPercent, 1) });
+    const grid = statGrid(
+      [
+        { label: "PID", value: row.pid },
+        { label: "Parent PID", value: row.ppid },
+        { label: "User", value: row.user },
+        { label: "State", value: (stateLabel[row.state] || row.state) },
+        { label: "Threads", value: row.threads },
+        { label: "Open FDs", value: row.numFds },
+        { label: "Priority", value: row.priority },
+        { label: "Nice", value: row.nice },
+        { label: "RSS", value: _fmtBytes(row.rssBytes) },
+        { label: "Virtual", value: _fmtBytes(row.vsizeBytes) },
+        { label: "Read", value: _fmtBytes(row.readBytes) },
+        { label: "Written", value: _fmtBytes(row.writeBytes) },
+      ],
+      { cols: 2 }
+    );
+    const body = h("div.proc-detail", null, [
+      h("div.proc-detail-bars", null, [cpuBar.el, memBar.el]),
+      grid,
+      h("div.proc-cmd-block", null, [
+        h("div.proc-cmd-label", { text: "Command line" }),
+        h("code.proc-cmd", { text: row.cmdline || row.name }),
+      ]),
+    ]);
+    const dlg = drawer({
+      title: row.name,
+      subtitle: "PID " + row.pid + " · " + row.user,
+      icon: "processes",
+      side: "right",
+      width: "460px",
+      body,
+    });
+    dlg.open();
   }
 
   _updateTable() {

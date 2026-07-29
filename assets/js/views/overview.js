@@ -25,6 +25,7 @@ import store from "../store.js";
 import { statTile, card, meter, badge } from "../components/card.js";
 import { LineChart } from "../charts/linechart.js";
 import { Bars } from "../charts/bars.js";
+import { AreaChart } from "../charts/areachart.js";
 
 export class OverviewView {
   constructor() {
@@ -145,6 +146,13 @@ export class OverviewView {
     // --- System summary strip ---
     this.summaryStrip = this._buildSummaryStrip();
 
+    // --- Network throughput (stacked area) ---
+    this.netAreaHost = h("div.chart.chart-md", { style: { height: "160px" } });
+    const netAreaCard = card(
+      { title: "Network Throughput", iconName: "network" },
+      [this.netAreaHost]
+    );
+
     view.append(
       this.summaryStrip.el,
       h("div.section", null, tilesRow),
@@ -152,6 +160,7 @@ export class OverviewView {
         h("div.col-span-2", { style: { gridColumn: "span 2" } }, perfCard),
         coreCard,
       ]),
+      h("div.section", null, netAreaCard),
       h("div.grid.grid-3.section", null, [fsCard, memCard, procCard])
     );
 
@@ -178,6 +187,14 @@ export class OverviewView {
         max: 100,
         autoColor: true,
         gap: 3,
+      });
+      this.netArea = new AreaChart(this.netAreaHost, {
+        stacked: true,
+        maxPoints: 120,
+        series: [
+          { key: "rx", label: "Download", color: cssVar("--series-net-rx") },
+          { key: "tx", label: "Upload", color: cssVar("--series-net-tx") },
+        ],
       });
       this._seedCharts();
       this._refresh(store.get());
@@ -307,6 +324,14 @@ export class OverviewView {
       },
     ];
     this.charts.perf.setData(ts, series);
+
+    if (this.netArea) {
+      const rx = slice(hist.netRx);
+      const tx = slice(hist.netTx);
+      this.netArea.setData(
+        ts.map((t, i) => ({ t, values: { rx: rx[i] || 0, tx: tx[i] || 0 } }))
+      );
+    }
   }
 
   _refresh(state) {
@@ -473,6 +498,7 @@ export class OverviewView {
     this._unsubs = [];
     if (this.charts.perf) this.charts.perf.destroy();
     if (this.coreBars) this.coreBars.destroy();
+    if (this.netArea) this.netArea.destroy();
     for (const t of Object.values(this.tiles)) {
       const s = t.spark && t.spark();
       if (s) s.destroy();
