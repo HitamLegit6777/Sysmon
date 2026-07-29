@@ -20,9 +20,9 @@ import {
 } from "../util.js";
 import store from "../store.js";
 import { card, badge } from "../components/card.js";
-import { DataTable } from "../components/table.js";
+import { DataTable2 } from "../components/datatable2.js";
 import { drawer } from "../components/primitives.js";
-import { attachContextMenu, contextMenu } from "../components/tooltip.js";
+import { contextMenu } from "../components/tooltip.js";
 import { statGrid, pill, progressBar } from "../components/widgets.js";
 import { fmtBytes as _fmtBytes } from "../util.js";
 
@@ -68,13 +68,15 @@ export class ProcessesView {
     ]);
     this.resultCount = searchBar.querySelector(".muted");
 
-    // Table.
-    this.table = new DataTable({
+    // Table. datatable2 owns sorting internally (click headers) and renders
+    // with row reconciliation; we sort by CPU desc by default.
+    this.table = new DataTable2({
       columns: [
-        { key: "pid", label: "PID", num: true, width: "70px", render: (r) => h("span.mono.text-3", { text: String(r.pid) }) },
+        { key: "pid", label: "PID", sortable: true, align: "right", width: "70px", render: (r) => h("span.mono.text-3", { text: String(r.pid) }) },
         {
           key: "name",
           label: "Name",
+          sortable: true,
           render: (r) =>
             h("div.col", { style: { minWidth: 0 } }, [
               h("span.cell-strong.truncate", { text: r.name }),
@@ -84,33 +86,32 @@ export class ProcessesView {
         {
           key: "cpuPercent",
           label: "CPU%",
-          num: true,
+          sortable: true,
+          align: "right",
           render: (r) => h("span.mono", { text: fmtPct(r.cpuPercent, 1), style: { color: usageColor(r.cpuPercent) } }),
         },
         {
           key: "memPercent",
           label: "MEM%",
-          num: true,
+          sortable: true,
+          align: "right",
           render: (r) => h("span.mono", { text: fmtPct(r.memPercent, 1) }),
         },
-        { key: "rssBytes", label: "RSS", num: true, render: (r) => fmtBytes(r.rssBytes) },
-        { key: "threads", label: "Thr", num: true, render: (r) => String(r.threads) },
-        { key: "user", label: "User", render: (r) => h("span.text-2", { text: r.user }) },
+        { key: "rssBytes", label: "RSS", sortable: true, align: "right", render: (r) => fmtBytes(r.rssBytes) },
+        { key: "threads", label: "Thr", sortable: true, align: "right", render: (r) => String(r.threads) },
+        { key: "user", label: "User", sortable: true, render: (r) => h("span.text-2", { text: r.user }) },
         {
           key: "state",
           label: "State",
+          sortable: true,
           render: (r) => badge(r.state, stateKind(r.state), true),
         },
       ],
-      sortKey: this.sortKey,
-      sortDir: this.sortDir,
       rowKey: (r) => String(r.pid),
       emptyText: "No matching processes",
-      onSort: (key, dir) => {
-        this.sortKey = key;
-        this.sortDir = dir;
-        this._updateTable();
-      },
+      defaultSort: { key: this.sortKey, dir: this.sortDir },
+      onRowClick: (row) => this._openDetail(row),
+      onRowContext: (row, e) => this._contextItems(row, e),
     });
     const tableCard = card({ title: "Process Table", iconName: "processes" }, [this.table.el]);
 
@@ -121,20 +122,8 @@ export class ProcessesView {
     );
     container.appendChild(view);
 
-    // Click a row to open a detail drawer; right-click for quick actions.
-    this.table.onRowClick((row) => this._openDetail(row));
-    attachContextMenu(this.table.el, (e) => {
-      const tr = e.target.closest("tr[data-rowkey], tr");
-      const pidText = tr && tr.querySelector("td");
-      const row = this._rowFromEvent(e);
-      if (!row) return [];
-      return [
-        { header: row.name + " (" + row.pid + ")" },
-        { label: "View details", icon: "info", onClick: () => this._openDetail(row) },
-        { label: "Copy PID", icon: "layers", onClick: () => navigator.clipboard && navigator.clipboard.writeText(String(row.pid)) },
-        { label: "Copy command", icon: "processes", onClick: () => navigator.clipboard && navigator.clipboard.writeText(row.cmdline || row.name) },
-      ];
-    });
+    // Row click (detail drawer) and right-click (quick actions) are wired via
+    // the DataTable2 onRowClick/onRowContext options above.
 
     this._unsubs.push(store.on("processes", () => this._refresh()));
     this._refresh();
@@ -152,23 +141,6 @@ export class ProcessesView {
     this.counts.threads.textContent = fmtNum(procs.totalThreads);
     this.counts.zombie.textContent = fmtNum(procs.zombie);
     this._updateTable();
-  }
-
-  _rowFromEvent(e) {
-    const procs = store.get().processes;
-    if (!procs || !procs.processes) return null;
-    const tr = e.target.closest("tr");
-    if (!tr) return null;
-    // find the pid cell (first numeric-looking cell)
-    const cells = tr.querySelectorAll("td");
-    for (const c of cells) {
-      const n = parseInt(c.textContent, 10);
-      if (!Number.isNaN(n)) {
-        const found = procs.processes.find((p) => p.pid === n);
-        if (found) return found;
-      }
-    }
-    return null;
   }
 
   _openDetail(row) {
@@ -228,20 +200,24 @@ export class ProcessesView {
       );
     }
 
-    const key = this.sortKey;
-    const dir = this.sortDir === "asc" ? 1 : -1;
-    list = list.slice().sort((a, b) => {
-      const av = a[key];
-      const bv = b[key];
-      if (typeof av === "string") return av.localeCompare(bv) * dir;
-      return (av - bv) * dir;
-    });
-
+    // Cap the row count for render cost; DataTable2 handles sorting internally
+    // based on the active header, so we hand it the (pre-capped) filtered set.
     const shown = list.slice(0, 200);
-    this.table.update(shown);
+    this.table.setData(shown);
     if (this.resultCount) {
       this.resultCount.textContent = `${shown.length} of ${procs.total} processes`;
     }
+  }
+
+  /* Build the right-click quick-action menu for a process row and open it. */
+  _contextItems(row, e) {
+    if (!row) return;
+    contextMenu(e.clientX, e.clientY, [
+      { header: row.name + " (" + row.pid + ")" },
+      { label: "View details", icon: "info", onClick: () => this._openDetail(row) },
+      { label: "Copy PID", icon: "layers", onClick: () => navigator.clipboard && navigator.clipboard.writeText(String(row.pid)) },
+      { label: "Copy command", icon: "processes", onClick: () => navigator.clipboard && navigator.clipboard.writeText(row.cmdline || row.name) },
+    ]);
   }
 
   update() {}
