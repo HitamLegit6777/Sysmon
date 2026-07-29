@@ -82,7 +82,14 @@ export class NetworkView {
       ["UDP sockets", "0"],
       ["Total RX", "0"],
       ["Total TX", "0"],
+      ["RX since open", "0"],
+      ["TX since open", "0"],
     ]);
+    // Session baseline: first cumulative sample seen after mount. Used to show a
+    // "since open" delta that visibly climbs even when the lifetime GiB totals
+    // round to the same string at idle traffic.
+    this._baseRx = null;
+    this._baseTx = null;
     const socketCard = card({ title: "Sockets", iconName: "wifi" }, [this.socketInfo]);
 
     // Recent throughput (stacked RX/TX per sample bucket).
@@ -265,12 +272,20 @@ export class NetworkView {
     this._kpis.listen.update({ value: fmtNum(net.tcpListening) });
     this._kpis.ifaces.update({ value: upCount + " / " + ifaces.length });
 
+    // Establish the session baseline on the first sample, then track deltas.
+    if (this._baseRx === null) this._baseRx = net.totalRxBytes;
+    if (this._baseTx === null) this._baseTx = net.totalTxBytes;
+    const sinceRx = Math.max(0, net.totalRxBytes - this._baseRx);
+    const sinceTx = Math.max(0, net.totalTxBytes - this._baseTx);
+
     updateKvList(this.socketInfo, [
       fmtNum(net.tcpConnections),
       fmtNum(net.tcpListening),
       fmtNum(net.udpConnections),
-      fmtBytes(net.totalRxBytes),
-      fmtBytes(net.totalTxBytes),
+      fmtBytes(net.totalRxBytes, 2),
+      fmtBytes(net.totalTxBytes, 2),
+      fmtBytes(sinceRx, 2),
+      fmtBytes(sinceTx, 2),
     ]);
 
     if (this.legendVals.rx) this.legendVals.rx.textContent = fmtRate(net.totalRxBytesPerSec);
