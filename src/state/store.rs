@@ -140,7 +140,7 @@ impl AppState {
 
     /// Whether the web shell feature is enabled.
     pub fn shell_enabled(&self) -> bool {
-        self.inner.enable_shell
+        self.inner.enable_shell && !self.inner.auth.uses_default_credentials()
     }
 
     pub fn config(&self) -> &Config {
@@ -356,8 +356,28 @@ impl AppState {
         if let Some(path) = self.inner.alert_rules_path.as_ref() {
             let json = serde_json::to_vec_pretty(&rules).map_err(|e| e.to_string())?;
             let tmp = path.with_extension("json.tmp");
-            std::fs::write(&tmp, json).map_err(|e| format!("Failed to save rules: {}", e))?;
+            let mut options = std::fs::OpenOptions::new();
+            options.write(true).create(true).truncate(true);
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::OpenOptionsExt;
+                options.mode(0o600);
+            }
+            use std::io::Write;
+            let mut file = options
+                .open(&tmp)
+                .map_err(|e| format!("Failed to save rules: {}", e))?;
+            file.write_all(&json)
+                .map_err(|e| format!("Failed to save rules: {}", e))?;
+            file.sync_all()
+                .map_err(|e| format!("Failed to sync rules: {}", e))?;
             std::fs::rename(&tmp, path).map_err(|e| format!("Failed to finalize rules: {}", e))?;
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))
+                    .map_err(|e| format!("Failed to secure rules: {}", e))?;
+            }
         }
         *self.inner.alert_rules.write() = rules.clone();
         self.inner.alert_engine.write().replace_rules(&rules);
@@ -451,6 +471,31 @@ mod alert_rule_tests {
         let persisted: Vec<AlertRuleConfig> =
             serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
         assert!(persisted.iter().any(|r| r.id == "custom-cpu-renamed"));
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+                0o600
+            );
+        }
         let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn shell_is_blocked_for_default_credentials() {
+        let auth_path = std::env::temp_dir().join(format!(
+            "sysmon-shell-gate-{}-{}.json",
+            std::process::id(),
+            crate::state::now_millis()
+        ));
+        let state = AppState::with_options(Config::default(), true, Some(auth_path.clone()), None);
+        assert!(!state.shell_enabled());
+        state
+            .auth()
+            .change_password("admin123", "a-secure-password")
+            .unwrap();
+        assert!(state.shell_enabled());
+        let _ = std::fs::remove_file(auth_path);
     }
 }

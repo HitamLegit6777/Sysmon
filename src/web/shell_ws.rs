@@ -24,16 +24,21 @@ pub async fn handler(
     if !state.shell_enabled() {
         return (StatusCode::FORBIDDEN, "shell disabled").into_response();
     }
-    let authed = crate::web::auth_api::token_from_request(&req)
-        .and_then(|t| state.auth().validate(&t))
-        .is_some();
-    if !authed {
+    if !crate::web::auth_api::same_origin(&req) {
+        return (StatusCode::FORBIDDEN, "cross-origin websocket rejected").into_response();
+    }
+    let Some(token) = crate::web::auth_api::token_from_request(&req) else {
+        return (StatusCode::UNAUTHORIZED, "authentication required").into_response();
+    };
+    if state.auth().validate(&token).is_none() {
         return (StatusCode::UNAUTHORIZED, "authentication required").into_response();
     }
-    ws.on_upgrade(handle_socket)
+    ws.max_message_size(64 * 1024)
+        .max_frame_size(64 * 1024)
+        .on_upgrade(move |socket| handle_socket(socket, state, token))
 }
 
-async fn handle_socket(socket: WebSocket) {
+async fn handle_socket(socket: WebSocket, state: AppState, token: String) {
     let (mut sender, mut receiver) = socket.split();
 
     // Spawn the PTY at a default size; the client sends a resize immediately.
@@ -41,7 +46,9 @@ async fn handle_socket(socket: WebSocket) {
         Ok(s) => s,
         Err(e) => {
             let _ = sender
-                .send(Message::Text(format!("\r\n[sysmon] failed to open shell: {}\r\n", e).into()))
+                .send(Message::Text(
+                    format!("\r\n[sysmon] failed to open shell: {}\r\n", e).into(),
+                ))
                 .await;
             return;
         }
@@ -61,7 +68,21 @@ async fn handle_socket(socket: WebSocket) {
 
     // WebSocket input → PTY.
     let sess_in = session.clone();
-    while let Some(Ok(msg)) = receiver.next().await {
+    let mut auth_check = tokio::time::interval(std::time::Duration::from_secs(15));
+    auth_check.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    loop {
+        let msg = tokio::select! {
+            _ = auth_check.tick() => {
+                if state.auth().validate(&token).is_none() {
+                    break;
+                }
+                continue;
+            }
+            msg = receiver.next() => match msg {
+                Some(Ok(msg)) => msg,
+                _ => break,
+            },
+        };
         match msg {
             Message::Text(text) => {
                 if let Ok(cmd) = serde_json::from_str::<ClientMsg>(&text) {

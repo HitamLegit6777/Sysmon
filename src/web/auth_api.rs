@@ -3,7 +3,7 @@
 use crate::state::store::AppState;
 use axum::{
     body::Body,
-    extract::{Request, State},
+    extract::{ConnectInfo, Request, State},
     http::{header, StatusCode},
     middleware::Next,
     response::{IntoResponse, Response},
@@ -11,6 +11,7 @@ use axum::{
 };
 use serde::Deserialize;
 use serde_json::json;
+use std::net::SocketAddr;
 
 pub const COOKIE_NAME: &str = "sysmon_session";
 
@@ -26,6 +27,37 @@ pub fn token_from_request(req: &Request) -> Option<String> {
         }
     }
     None
+}
+
+/// Reject browser requests whose Origin does not match Host. Non-browser
+/// clients may omit Origin; an explicitly foreign origin is never accepted.
+pub fn same_origin(req: &Request) -> bool {
+    let Some(origin) = req
+        .headers()
+        .get(header::ORIGIN)
+        .and_then(|v| v.to_str().ok())
+    else {
+        return true;
+    };
+    let Some(host) = req
+        .headers()
+        .get(header::HOST)
+        .and_then(|v| v.to_str().ok())
+    else {
+        return false;
+    };
+    origin == format!("http://{}", host) || origin == format!("https://{}", host)
+}
+
+pub async fn require_same_origin(req: Request, next: Next) -> Response {
+    if !same_origin(&req) {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(json!({ "error": "cross-origin request rejected" })),
+        )
+            .into_response();
+    }
+    next.run(req).await
 }
 
 /// Middleware that rejects unauthenticated requests. On success, the request
@@ -49,11 +81,28 @@ pub struct LoginBody {
 }
 
 /// POST /api/auth/login — set a session cookie on success.
-pub async fn login(State(state): State<AppState>, Json(body): Json<LoginBody>) -> Response {
+pub async fn login(
+    State(state): State<AppState>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    Json(body): Json<LoginBody>,
+) -> Response {
+    let peer = peer.ip().to_string();
+    if let Err(retry_after) = state.auth().login_allowed(&peer) {
+        let mut response = (
+            StatusCode::TOO_MANY_REQUESTS,
+            Json(json!({ "error": "Too many login attempts. Try again later." })),
+        )
+            .into_response();
+        if let Ok(value) = retry_after.to_string().parse() {
+            response.headers_mut().insert(header::RETRY_AFTER, value);
+        }
+        return response;
+    }
     match state.auth().login(&body.username, &body.password) {
         Some(token) => {
+            state.auth().record_login_result(&peer, true);
             let cookie = format!(
-                "{}={}; Path=/; HttpOnly; SameSite=Lax; Max-Age=43200",
+                "{}={}; Path=/; HttpOnly; SameSite=Strict; Max-Age=43200",
                 COOKIE_NAME, token
             );
             let mut resp = Json(json!({
@@ -67,7 +116,10 @@ pub async fn login(State(state): State<AppState>, Json(body): Json<LoginBody>) -
             resp
         }
         None => (
-            StatusCode::UNAUTHORIZED,
+            {
+                state.auth().record_login_result(&peer, false);
+                StatusCode::UNAUTHORIZED
+            },
             Json(json!({ "error": "Invalid username or password" })),
         )
             .into_response(),
@@ -79,7 +131,10 @@ pub async fn logout(State(state): State<AppState>, req: Request) -> Response {
     if let Some(token) = token_from_request(&req) {
         state.auth().logout(&token);
     }
-    let clear = format!("{}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0", COOKIE_NAME);
+    let clear = format!(
+        "{}=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0",
+        COOKIE_NAME
+    );
     let mut resp = Json(json!({ "ok": true })).into_response();
     resp.headers_mut()
         .insert(header::SET_COOKIE, clear.parse().unwrap());
@@ -109,7 +164,10 @@ pub async fn change_password(
     State(state): State<AppState>,
     Json(body): Json<ChangePasswordBody>,
 ) -> Response {
-    match state.auth().change_password(&body.current_password, &body.new_password) {
+    match state
+        .auth()
+        .change_password(&body.current_password, &body.new_password)
+    {
         Ok(()) => Json(json!({ "ok": true })).into_response(),
         Err(msg) => (StatusCode::BAD_REQUEST, Json(json!({ "error": msg }))).into_response(),
     }
@@ -128,7 +186,10 @@ pub async fn change_username(
     State(state): State<AppState>,
     Json(body): Json<ChangeUsernameBody>,
 ) -> Response {
-    match state.auth().change_username(&body.current_password, &body.new_username) {
+    match state
+        .auth()
+        .change_username(&body.current_password, &body.new_username)
+    {
         Ok(()) => Json(json!({ "ok": true, "username": state.auth().username() })).into_response(),
         Err(msg) => (StatusCode::BAD_REQUEST, Json(json!({ "error": msg }))).into_response(),
     }
@@ -139,8 +200,12 @@ pub async fn set_preferences(
     State(state): State<AppState>,
     Json(prefs): Json<crate::auth::Preferences>,
 ) -> Response {
-    state.auth().set_preferences(prefs);
-    Json(json!({ "ok": true, "preferences": state.auth().preferences() })).into_response()
+    match state.auth().set_preferences(prefs) {
+        Ok(()) => {
+            Json(json!({ "ok": true, "preferences": state.auth().preferences() })).into_response()
+        }
+        Err(error) => (StatusCode::BAD_REQUEST, Json(json!({ "error": error }))).into_response(),
+    }
 }
 
 /// A permissive body reader for endpoints that ignore the request body but must

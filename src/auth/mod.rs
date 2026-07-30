@@ -6,19 +6,28 @@
 use argon2::password_hash::rand_core::OsRng;
 use argon2::password_hash::{PasswordHash, PasswordHasher, PasswordVerifier, SaltString};
 use argon2::Argon2;
-use parking_lot::RwLock;
+use parking_lot::{Mutex, RwLock};
 use rand::RngCore;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::io::Write;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 /// How long a session stays valid without activity (seconds).
 const SESSION_TTL_SECS: u64 = 12 * 60 * 60; // 12 hours
+const MAX_SESSIONS: usize = 128;
+const MAX_FAILURES: u32 = 5;
+const FAILURE_WINDOW_SECS: u64 = 60;
+const LOCKOUT_SECS: u64 = 60;
 
 fn now_secs() -> u64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0)
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
 }
 
 /// Per-user UI preferences persisted server-side so they follow the account.
@@ -31,7 +40,10 @@ pub struct Preferences {
 
 impl Default for Preferences {
     fn default() -> Self {
-        Preferences { theme: "dark".into(), accent: "violet".into() }
+        Preferences {
+            theme: "dark".into(),
+            accent: "violet".into(),
+        }
     }
 }
 
@@ -62,6 +74,13 @@ struct Session {
     expires_at: u64,
 }
 
+#[derive(Clone, Default)]
+struct LoginAttempt {
+    failures: u32,
+    window_started: u64,
+    locked_until: u64,
+}
+
 /// Shared authentication state.
 #[derive(Clone)]
 pub struct Auth {
@@ -71,7 +90,33 @@ pub struct Auth {
 struct AuthInner {
     doc: RwLock<AuthDoc>,
     sessions: RwLock<HashMap<String, Session>>,
+    login_attempts: RwLock<HashMap<String, LoginAttempt>>,
+    default_credentials: AtomicBool,
+    dummy_password_hash: String,
+    persist_lock: Mutex<()>,
     path: PathBuf,
+}
+
+fn secure_write(path: &std::path::Path, data: &[u8]) -> std::io::Result<()> {
+    let tmp = path.with_extension("json.tmp");
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+        options.mode(0o600);
+        let mut file = options.open(&tmp)?;
+        file.write_all(data)?;
+        file.sync_all()?;
+        std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o600))?;
+    }
+    #[cfg(not(unix))]
+    {
+        let mut file = options.open(&tmp)?;
+        file.write_all(data)?;
+        file.sync_all()?;
+    }
+    std::fs::rename(tmp, path)
 }
 
 /// Argon2id hash of a plaintext password, returned as a PHC string.
@@ -100,30 +145,70 @@ impl Auth {
     /// (admin / admin123) if it does not yet exist.
     pub fn load(path: PathBuf) -> Self {
         let doc = match std::fs::read_to_string(&path) {
-            Ok(text) => serde_json::from_str::<AuthDoc>(&text).unwrap_or_default(),
+            Ok(text) => match serde_json::from_str::<AuthDoc>(&text) {
+                Ok(doc)
+                    if PasswordHash::new(&doc.password_hash).is_ok()
+                        && !doc.username.is_empty() =>
+                {
+                    doc
+                }
+                Ok(_) | Err(_) => {
+                    // Fail closed: a damaged credential file must never restore
+                    // the well-known default password.
+                    tracing::error!(
+                        "auth file {} is invalid; login disabled until repaired",
+                        path.display()
+                    );
+                    AuthDoc {
+                        username: String::new(),
+                        password_hash: String::new(),
+                        preferences: Preferences::default(),
+                    }
+                }
+            },
             Err(_) => {
                 let d = AuthDoc::default();
-                // Best-effort write of the initial document.
                 if let Ok(json) = serde_json::to_string_pretty(&d) {
-                    let _ = std::fs::write(&path, json);
+                    if let Err(e) = secure_write(&path, json.as_bytes()) {
+                        tracing::error!("failed to create auth file {}: {}", path.display(), e);
+                    }
                 }
                 d
             }
         };
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
+        }
+        let default_credentials = PasswordHash::new(&doc.password_hash)
+            .ok()
+            .and_then(|hash| Argon2::default().verify_password(b"admin123", &hash).ok())
+            .is_some();
         Auth {
             inner: Arc::new(AuthInner {
                 doc: RwLock::new(doc),
                 sessions: RwLock::new(HashMap::new()),
+                login_attempts: RwLock::new(HashMap::new()),
+                default_credentials: AtomicBool::new(default_credentials),
+                dummy_password_hash: hash_password("sysmon-dummy-password"),
+                persist_lock: Mutex::new(()),
                 path,
             }),
         }
     }
 
-    fn persist(&self) {
-        let doc = self.inner.doc.read().clone();
-        if let Ok(json) = serde_json::to_string_pretty(&doc) {
-            let _ = std::fs::write(&self.inner.path, json);
-        }
+    fn persist_doc(&self, doc: &AuthDoc) -> Result<(), &'static str> {
+        let _persist = self.inner.persist_lock.lock();
+        let json = serde_json::to_string_pretty(doc).map_err(|_| "Failed to encode auth data")?;
+        secure_write(&self.inner.path, json.as_bytes()).map_err(|e| {
+            tracing::error!(
+                "failed to persist auth file {}: {}",
+                self.inner.path.display(),
+                e
+            );
+            "Failed to persist auth data"
+        })
     }
 
     /// Current username.
@@ -136,28 +221,96 @@ impl Auth {
         self.inner.doc.read().preferences.clone()
     }
 
+    pub fn uses_default_credentials(&self) -> bool {
+        self.inner.default_credentials.load(Ordering::Relaxed)
+    }
+
     /// Verify credentials; on success create and return a fresh session token.
     pub fn login(&self, username: &str, password: &str) -> Option<String> {
-        let doc = self.inner.doc.read();
-        if username != doc.username {
+        if username.len() > 64 || password.len() > 1024 {
             return None;
         }
-        let parsed = PasswordHash::new(&doc.password_hash).ok()?;
-        Argon2::default()
+        let doc = self.inner.doc.read();
+        // Always perform one Argon2 verification so an attacker cannot discover
+        // the username from a much faster rejection path.
+        let username_matches = username == doc.username && !doc.username.is_empty();
+        let hash = if username_matches {
+            &doc.password_hash
+        } else {
+            &self.inner.dummy_password_hash
+        };
+        let parsed = PasswordHash::new(hash).ok()?;
+        let password_matches = Argon2::default()
             .verify_password(password.as_bytes(), &parsed)
-            .ok()?;
+            .is_ok();
+        if !username_matches || !password_matches {
+            return None;
+        }
         drop(doc);
 
         let token = new_token();
-        self.inner.sessions.write().insert(
+        let now = now_secs();
+        let mut sessions = self.inner.sessions.write();
+        sessions.retain(|_, session| session.expires_at >= now);
+        if sessions.len() >= MAX_SESSIONS {
+            if let Some(oldest) = sessions
+                .iter()
+                .min_by_key(|(_, session)| session.expires_at)
+                .map(|(token, _)| token.clone())
+            {
+                sessions.remove(&oldest);
+            }
+        }
+        sessions.insert(
             token.clone(),
-            Session { username: username.to_string(), expires_at: now_secs() + SESSION_TTL_SECS },
+            Session {
+                username: username.to_string(),
+                expires_at: now_secs() + SESSION_TTL_SECS,
+            },
         );
         Some(token)
     }
 
+    /// Per-peer brute-force protection. Returns retry-after seconds when locked.
+    pub fn login_allowed(&self, peer: &str) -> Result<(), u64> {
+        let now = now_secs();
+        let mut attempts = self.inner.login_attempts.write();
+        attempts.retain(|_, a| {
+            a.locked_until > now || now.saturating_sub(a.window_started) <= FAILURE_WINDOW_SECS
+        });
+        let attempt = attempts.entry(peer.to_string()).or_default();
+        if attempt.locked_until > now {
+            Err(attempt.locked_until - now)
+        } else {
+            Ok(())
+        }
+    }
+
+    pub fn record_login_result(&self, peer: &str, success: bool) {
+        let now = now_secs();
+        let mut attempts = self.inner.login_attempts.write();
+        if success {
+            attempts.remove(peer);
+            return;
+        }
+        let attempt = attempts.entry(peer.to_string()).or_default();
+        if attempt.window_started == 0
+            || now.saturating_sub(attempt.window_started) > FAILURE_WINDOW_SECS
+        {
+            attempt.window_started = now;
+            attempt.failures = 0;
+        }
+        attempt.failures += 1;
+        if attempt.failures >= MAX_FAILURES {
+            attempt.locked_until = now + LOCKOUT_SECS;
+        }
+    }
+
     /// Return the username for a valid, unexpired session, refreshing its TTL.
     pub fn validate(&self, token: &str) -> Option<String> {
+        if token.len() != 64 || !token.bytes().all(|b| b.is_ascii_hexdigit()) {
+            return None;
+        }
         let mut sessions = self.inner.sessions.write();
         let sess = sessions.get_mut(token)?;
         if sess.expires_at < now_secs() {
@@ -176,8 +329,8 @@ impl Auth {
     /// Change the password after verifying the current one. Invalidates all
     /// existing sessions on success (forces re-login everywhere).
     pub fn change_password(&self, current: &str, next: &str) -> Result<(), &'static str> {
-        if next.len() < 6 {
-            return Err("New password must be at least 6 characters");
+        if next.len() < 12 || next.len() > 1024 {
+            return Err("New password must be 12-1024 characters");
         }
         {
             let doc = self.inner.doc.read();
@@ -186,8 +339,13 @@ impl Auth {
                 .verify_password(current.as_bytes(), &parsed)
                 .map_err(|_| "Current password is incorrect")?;
         }
-        self.inner.doc.write().password_hash = hash_password(next);
-        self.persist();
+        let mut updated = self.inner.doc.read().clone();
+        updated.password_hash = hash_password(next);
+        self.persist_doc(&updated)?;
+        *self.inner.doc.write() = updated;
+        self.inner
+            .default_credentials
+            .store(false, Ordering::Relaxed);
         self.inner.sessions.write().clear();
         Ok(())
     }
@@ -205,15 +363,30 @@ impl Auth {
                 .verify_password(current_password.as_bytes(), &parsed)
                 .map_err(|_| "Current password is incorrect")?;
         }
-        self.inner.doc.write().username = next.to_string();
-        self.persist();
+        let mut updated = self.inner.doc.read().clone();
+        updated.username = next.to_string();
+        self.persist_doc(&updated)?;
+        *self.inner.doc.write() = updated;
+        self.inner.sessions.write().clear();
         Ok(())
     }
 
     /// Persist updated UI preferences.
-    pub fn set_preferences(&self, prefs: Preferences) {
-        self.inner.doc.write().preferences = prefs;
-        self.persist();
+    pub fn set_preferences(&self, prefs: Preferences) -> Result<(), &'static str> {
+        if !matches!(prefs.theme.as_str(), "dark" | "light") {
+            return Err("Unsupported theme");
+        }
+        if !matches!(
+            prefs.accent.as_str(),
+            "blue" | "violet" | "emerald" | "amber" | "rose"
+        ) {
+            return Err("Unsupported accent");
+        }
+        let mut updated = self.inner.doc.read().clone();
+        updated.preferences = prefs;
+        self.persist_doc(&updated)?;
+        *self.inner.doc.write() = updated;
+        Ok(())
     }
 }
 
@@ -250,9 +423,9 @@ mod tests {
         let a = temp_auth();
         assert!(a.change_password("wrong", "newpass").is_err());
         assert!(a.change_password("admin123", "abc").is_err()); // too short
-        assert!(a.change_password("admin123", "newpass123").is_ok());
+        assert!(a.change_password("admin123", "newpass12345").is_ok());
         assert!(a.login("admin", "admin123").is_none());
-        assert!(a.login("admin", "newpass123").is_some());
+        assert!(a.login("admin", "newpass12345").is_some());
     }
 
     #[test]
@@ -261,5 +434,66 @@ mod tests {
         assert!(a.change_username("admin123", "operator").is_ok());
         assert_eq!(a.username(), "operator");
         assert!(a.login("operator", "admin123").is_some());
+    }
+
+    #[test]
+    fn corrupt_auth_file_fails_closed() {
+        let mut p = std::env::temp_dir();
+        p.push(format!("sysmon-auth-corrupt-{}.json", new_token()));
+        std::fs::write(&p, b"not-json").unwrap();
+        let a = Auth::load(p.clone());
+        assert!(a.login("admin", "admin123").is_none());
+        let _ = std::fs::remove_file(p);
+    }
+
+    #[test]
+    fn login_attempts_are_rate_limited_and_success_resets_them() {
+        let a = temp_auth();
+        for _ in 0..MAX_FAILURES {
+            assert!(a.login_allowed("peer-a").is_ok());
+            a.record_login_result("peer-a", false);
+        }
+        assert!(a.login_allowed("peer-a").is_err());
+        assert!(a.login_allowed("peer-b").is_ok());
+        a.record_login_result("peer-b", false);
+        a.record_login_result("peer-b", true);
+        assert!(a.login_allowed("peer-b").is_ok());
+    }
+
+    #[test]
+    fn preferences_are_allowlisted() {
+        let a = temp_auth();
+        assert!(a
+            .set_preferences(Preferences {
+                theme: "dark".into(),
+                accent: "blue".into()
+            })
+            .is_ok());
+        assert!(a
+            .set_preferences(Preferences {
+                theme: "<script>".into(),
+                accent: "blue".into()
+            })
+            .is_err());
+        assert!(a
+            .set_preferences(Preferences {
+                theme: "dark".into(),
+                accent: "url(evil)".into()
+            })
+            .is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn auth_file_permissions_are_private() {
+        use std::os::unix::fs::PermissionsExt;
+        let mut p = std::env::temp_dir();
+        p.push(format!("sysmon-auth-mode-{}.json", new_token()));
+        let _a = Auth::load(p.clone());
+        assert_eq!(
+            std::fs::metadata(&p).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+        let _ = std::fs::remove_file(p);
     }
 }

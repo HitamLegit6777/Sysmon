@@ -25,15 +25,20 @@ pub enum ClientMsg {
 pub struct ShellSession {
     writer: Box<dyn Write + Send>,
     master: Box<dyn portable_pty::MasterPty + Send>,
-    _child: Box<dyn portable_pty::Child + Send + Sync>,
+    child: Box<dyn portable_pty::Child + Send + Sync>,
 }
 
 impl ShellSession {
     /// Spawn a new PTY running the user's default shell (falls back to /bin/sh).
-    pub fn spawn(cols: u16, rows: u16) -> std::io::Result<(Self, mpsc::UnboundedReceiver<Vec<u8>>)> {
+    pub fn spawn(cols: u16, rows: u16) -> std::io::Result<(Self, mpsc::Receiver<Vec<u8>>)> {
         let pty_system = NativePtySystem::default();
         let pair = pty_system
-            .openpty(PtySize { rows, cols, pixel_width: 0, pixel_height: 0 })
+            .openpty(PtySize {
+                rows,
+                cols,
+                pixel_width: 0,
+                pixel_height: 0,
+            })
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))?;
 
         let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_string());
@@ -59,14 +64,16 @@ impl ShellSession {
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))?;
 
         // Reader loop on a blocking thread, forwarding chunks to an async channel.
-        let (tx, rx) = mpsc::unbounded_channel::<Vec<u8>>();
+        // Bound queued output so a slow/disconnected browser cannot grow server
+        // memory without limit. The reader blocks naturally when the queue is full.
+        let (tx, rx) = mpsc::channel::<Vec<u8>>(128);
         std::thread::spawn(move || {
             let mut buf = [0u8; 8192];
             loop {
                 match reader.read(&mut buf) {
                     Ok(0) => break,
                     Ok(n) => {
-                        if tx.send(buf[..n].to_vec()).is_err() {
+                        if tx.blocking_send(buf[..n].to_vec()).is_err() {
                             break;
                         }
                     }
@@ -75,7 +82,14 @@ impl ShellSession {
             }
         });
 
-        Ok((ShellSession { writer, master: pair.master, _child: child }, rx))
+        Ok((
+            ShellSession {
+                writer,
+                master: pair.master,
+                child,
+            },
+            rx,
+        ))
     }
 
     /// Write user input to the PTY.
@@ -86,7 +100,20 @@ impl ShellSession {
 
     /// Resize the PTY.
     pub fn resize(&self, cols: u16, rows: u16) {
-        let _ = self.master.resize(PtySize { rows, cols, pixel_width: 0, pixel_height: 0 });
+        let _ = self.master.resize(PtySize {
+            rows: rows.clamp(2, 500),
+            cols: cols.clamp(2, 1000),
+            pixel_width: 0,
+            pixel_height: 0,
+        });
+    }
+}
+
+impl Drop for ShellSession {
+    fn drop(&mut self) {
+        // Closing a WebSocket must not leave an interactive shell running as
+        // the server user (often root).
+        let _ = self.child.kill();
     }
 }
 

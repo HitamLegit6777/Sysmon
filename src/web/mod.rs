@@ -10,12 +10,38 @@ pub mod ws;
 
 use crate::state::store::AppState;
 use axum::{
+    extract::{DefaultBodyLimit, Request},
+    http::{header, HeaderValue},
     middleware,
+    response::Response,
     routing::{get, post, put},
     Router,
 };
 use tower_http::compression::CompressionLayer;
 use tower_http::cors::CorsLayer;
+
+async fn security_headers(req: Request, next: middleware::Next) -> Response {
+    let mut response = next.run(req).await;
+    let headers = response.headers_mut();
+    headers.insert(
+        header::X_CONTENT_TYPE_OPTIONS,
+        HeaderValue::from_static("nosniff"),
+    );
+    headers.insert(header::X_FRAME_OPTIONS, HeaderValue::from_static("DENY"));
+    headers.insert(
+        header::REFERRER_POLICY,
+        HeaderValue::from_static("no-referrer"),
+    );
+    headers.insert(
+        header::CONTENT_SECURITY_POLICY,
+        HeaderValue::from_static("default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self' ws: wss:; font-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'"),
+    );
+    headers.insert(
+        header::HeaderName::from_static("permissions-policy"),
+        HeaderValue::from_static("camera=(), microphone=(), geolocation=()"),
+    );
+    response
+}
 
 /// Build the full application router.
 pub fn build_router(state: AppState) -> Router {
@@ -31,6 +57,7 @@ pub fn build_router(state: AppState) -> Router {
         .route("/alert-rules/{id}", put(api::update_alert_rule))
         .route("/config", get(api::config))
         .route("/health", get(api::health))
+        .route_layer(middleware::from_fn(auth_api::require_same_origin))
         .route_layer(middleware::from_fn_with_state(
             state.clone(),
             auth_api::require_auth,
@@ -68,7 +95,8 @@ pub fn build_router(state: AppState) -> Router {
                 state.clone(),
                 auth_api::require_auth,
             )),
-        );
+        )
+        .route_layer(middleware::from_fn(auth_api::require_same_origin));
 
     // The SPA is served from the same origin as the API, so no cross-origin
     // access is needed. Restrict CORS to same-origin (do not advertise a
@@ -96,6 +124,8 @@ pub fn build_router(state: AppState) -> Router {
         .nest("/api/auth", auth_routes)
         .nest("/api", api_routes)
         .fallback(get(assets::index))
+        .layer(DefaultBodyLimit::max(128 * 1024))
+        .layer(middleware::from_fn(security_headers))
         .with_state(state.clone());
 
     if state.config().server.enable_compression {

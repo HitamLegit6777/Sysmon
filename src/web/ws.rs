@@ -22,16 +22,21 @@ pub async fn handler(
     State(state): State<AppState>,
     req: Request,
 ) -> Response {
-    let authed = crate::web::auth_api::token_from_request(&req)
-        .and_then(|t| state.auth().validate(&t))
-        .is_some();
-    if !authed {
+    if !crate::web::auth_api::same_origin(&req) {
+        return (StatusCode::FORBIDDEN, "cross-origin websocket rejected").into_response();
+    }
+    let Some(token) = crate::web::auth_api::token_from_request(&req) else {
+        return (StatusCode::UNAUTHORIZED, "authentication required").into_response();
+    };
+    if state.auth().validate(&token).is_none() {
         return (StatusCode::UNAUTHORIZED, "authentication required").into_response();
     }
-    ws.on_upgrade(move |socket| handle_socket(socket, state))
+    ws.max_message_size(64 * 1024)
+        .max_frame_size(64 * 1024)
+        .on_upgrade(move |socket| handle_socket(socket, state, token))
 }
 
-async fn handle_socket(mut socket: WebSocket, state: AppState) {
+async fn handle_socket(mut socket: WebSocket, state: AppState, token: String) {
     let client_num = state.incr_ws_clients();
     tracing::debug!("ws client connected (total {})", client_num);
 
@@ -48,9 +53,17 @@ async fn handle_socket(mut socket: WebSocket, state: AppState) {
 
     let mut rx = state.subscribe();
     let mut sent: u64 = 0;
+    let mut auth_check = tokio::time::interval(std::time::Duration::from_secs(15));
+    auth_check.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
 
     loop {
         tokio::select! {
+            _ = auth_check.tick() => {
+                if state.auth().validate(&token).is_none() {
+                    let _ = socket.send(Message::Close(None)).await;
+                    break;
+                }
+            }
             // Broadcast messages from the sampler.
             msg = rx.recv() => {
                 match msg {

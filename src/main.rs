@@ -2,11 +2,11 @@
 //! constructs the shared state, spawns the sampler tasks, and serves the axum
 //! application until an interrupt signal is received.
 
+use std::net::SocketAddr;
+use std::process::ExitCode;
 use sysmon::state::config::Config;
 use sysmon::state::store::AppState;
 use sysmon::web;
-use std::net::SocketAddr;
-use std::process::ExitCode;
 
 /// Parsed command-line options.
 struct Cli {
@@ -80,8 +80,8 @@ ENVIRONMENT:\n\
 
 fn init_logging() {
     use tracing_subscriber::{fmt, EnvFilter};
-    let filter = EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| EnvFilter::new("info,sysmon=info"));
+    let filter =
+        EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info,sysmon=info"));
     fmt()
         .with_env_filter(filter)
         .with_target(false)
@@ -114,9 +114,7 @@ async fn main() -> ExitCode {
     }
 
     if !sysmon::util::procfs::has_procfs() {
-        tracing::warn!(
-            "no /proc detected; sysmon is designed for Linux and metrics will be empty"
-        );
+        tracing::warn!("no /proc detected; sysmon is designed for Linux and metrics will be empty");
     }
 
     let host = config.server.host.clone();
@@ -125,7 +123,7 @@ async fn main() -> ExitCode {
     let enable_shell = cli.enable_shell || std::env::var("SYSMON_ENABLE_SHELL").is_ok();
     if enable_shell {
         tracing::warn!(
-            "web shell ENABLED: authenticated users can run commands as this process's user"
+            "web shell requested; it remains disabled while default credentials are active"
         );
     }
     let state = AppState::with_options(
@@ -154,7 +152,11 @@ async fn main() -> ExitCode {
         }
     };
 
-    tracing::info!("sysmon {} listening on http://{}", env!("CARGO_PKG_VERSION"), addr);
+    tracing::info!(
+        "sysmon {} listening on http://{}",
+        env!("CARGO_PKG_VERSION"),
+        addr
+    );
     tracing::info!("embedded assets: {}", web::assets::asset_count());
     print_banner(&addr);
 
