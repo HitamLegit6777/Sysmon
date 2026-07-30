@@ -101,6 +101,9 @@ class WSClient {
       case "alert":
         this.store.applyAlertEvent(msg.data);
         break;
+      case "alertRules":
+        this.store.applyAlertRules(msg.data, msg.active);
+        break;
       case "pong":
         this.pongDeadline = 0;
         break;

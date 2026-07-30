@@ -110,12 +110,10 @@ fn serve(path: &str) -> Response {
             let mut resp = Response::builder()
                 .status(StatusCode::OK)
                 .header(header::CONTENT_TYPE, asset.content_type);
-            // Long cache for hashed-ish static assets except the HTML shell.
-            if asset.path.ends_with(".html") {
-                resp = resp.header(header::CACHE_CONTROL, "no-cache");
-            } else {
-                resp = resp.header(header::CACHE_CONTROL, "public, max-age=3600");
-            }
+            // Asset URLs are stable (not content-hashed). Revalidate them so a
+            // newly deployed binary cannot be paired with stale JS/CSS from a
+            // previous build for up to an hour.
+            resp = resp.header(header::CACHE_CONTROL, "no-cache");
             resp.body(asset.bytes.to_vec().into())
                 .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response())
         }

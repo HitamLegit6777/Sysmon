@@ -185,6 +185,17 @@ class Store {
     this.emit("processes", procs);
   }
 
+  applyAlertRules(rules, active = []) {
+    if (!this.state.config) this.state.config = {};
+    if (!this.state.config.alerts) this.state.config.alerts = {};
+    this.state.config.alerts.rules = Array.isArray(rules) ? rules : [];
+    if (!this.state.alerts) this.state.alerts = { active: [], history: [] };
+    this.state.alerts.active = Array.isArray(active) ? active : [];
+    this.emit("config", this.state.config);
+    this.emit("alertRules", this.state.config.alerts.rules);
+    this.emit("alerts", this.state.alerts);
+  }
+
   applyAlertEvent(ev) {
     // Maintain the active list and history from streamed transitions.
     const alerts = this.state.alerts;

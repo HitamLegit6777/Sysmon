@@ -80,6 +80,38 @@ impl AlertEngine {
         }
     }
 
+    /// Reconcile the evaluated rule set at runtime while retaining event
+    /// history and the runtime state of rules whose configuration did not
+    /// change. New or edited rules start clean and must satisfy their debounce
+    /// duration; adding an unrelated rule does not clear existing alerts.
+    pub fn replace_rules(&mut self, rules: &[AlertRuleConfig]) {
+        let previous: HashMap<String, RuleRuntime> = self
+            .rules
+            .drain(..)
+            .map(|runtime| (runtime.config.id.clone(), runtime))
+            .collect();
+        self.rules = rules
+            .iter()
+            .cloned()
+            .map(|config| match previous.get(&config.id) {
+                Some(old) if old.config == config => RuleRuntime {
+                    config,
+                    state: old.state,
+                    condition_since: old.condition_since,
+                    firing_since: old.firing_since,
+                    last_value: old.last_value,
+                },
+                _ => RuleRuntime {
+                    config,
+                    state: RuleState::Ok,
+                    condition_since: 0,
+                    firing_since: 0,
+                    last_value: 0.0,
+                },
+            })
+            .collect();
+    }
+
     /// Resolve a dotted metric path against a snapshot to a scalar value.
     fn resolve_metric(path: &str, snap: &MetricsSnapshot) -> Option<f64> {
         match path {
@@ -121,8 +153,7 @@ impl AlertEngine {
                 None => continue,
             };
             rule.last_value = value;
-            let condition_met =
-                Self::compare(value, &rule.config.operator, rule.config.threshold);
+            let condition_met = Self::compare(value, &rule.config.operator, rule.config.threshold);
 
             match rule.state {
                 RuleState::Ok => {
@@ -140,8 +171,7 @@ impl AlertEngine {
                 RuleState::Pending => {
                     if !condition_met {
                         rule.state = RuleState::Ok;
-                    } else if now_ms.saturating_sub(rule.condition_since)
-                        >= rule.config.duration_ms
+                    } else if now_ms.saturating_sub(rule.condition_since) >= rule.config.duration_ms
                     {
                         rule.state = RuleState::Firing;
                         rule.firing_since = now_ms;
@@ -260,6 +290,34 @@ mod tests {
         let events = engine.evaluate(&snap, 6000);
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].transition, "fired");
+    }
+
+    #[test]
+    fn replacing_rules_resets_runtime_but_keeps_history() {
+        let mut engine = AlertEngine::new(&[rule("cpu", "cpu.usage", 90.0, 0)]);
+        let mut snap = MetricsSnapshot::default();
+        snap.cpu.usage = 95.0;
+        assert_eq!(engine.evaluate(&snap, 1000).len(), 1);
+        assert_eq!(engine.history(10).len(), 1);
+
+        engine.replace_rules(&[rule("cpu-new", "cpu.usage", 99.0, 0)]);
+        assert!(engine.active().is_empty());
+        assert_eq!(engine.history(10).len(), 1);
+        assert!(engine.evaluate(&snap, 2000).is_empty());
+    }
+
+    #[test]
+    fn adding_rule_preserves_unchanged_active_rule() {
+        let original = rule("cpu", "cpu.usage", 90.0, 0);
+        let mut engine = AlertEngine::new(std::slice::from_ref(&original));
+        let mut snap = MetricsSnapshot::default();
+        snap.cpu.usage = 95.0;
+        engine.evaluate(&snap, 1000);
+        assert_eq!(engine.active().len(), 1);
+
+        engine.replace_rules(&[original, rule("cpu-system", "cpu.system", 80.0, 0)]);
+        assert_eq!(engine.active().len(), 1);
+        assert_eq!(engine.active()[0].id, "cpu");
     }
 
     #[test]

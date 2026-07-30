@@ -18,6 +18,9 @@ import {
 } from "../util.js";
 import store from "../store.js";
 import { card, badge } from "../components/card.js";
+import { modal } from "../components/primitives.js";
+import { authedFetch } from "../components/auth.js";
+import { notify } from "../components/toast.js";
 
 export class AlertsView {
   constructor() {
@@ -32,7 +35,12 @@ export class AlertsView {
     const activeCard = card({ title: "Active Alerts", iconName: "alerts", accent: true }, [this.activeWrap]);
 
     this.rulesWrap = h("div.col.gap-2");
-    const rulesCard = card({ title: "Rules", iconName: "layers" }, [this.rulesWrap]);
+    const addRule = h("button.btn.primary.sm.rule-add-btn", {
+      type: "button",
+      html: icon("plus", 14) + " Add rule",
+      onClick: () => this._openRuleEditor(),
+    });
+    const rulesCard = card({ title: "Rules", iconName: "layers", actions: [addRule] }, [this.rulesWrap]);
 
     this.logWrap = h("div.col.gap-2");
     const logCard = card({ title: "Event Log", iconName: "clock" }, [this.logWrap]);
@@ -45,6 +53,7 @@ export class AlertsView {
 
     this._unsubs.push(store.on("alerts", () => this._refresh()));
     this._unsubs.push(store.on("alertEvent", () => this._refresh()));
+    this._unsubs.push(store.on("alertRules", () => this._refreshRules()));
     this._unsubs.push(store.on("snapshot", () => this._refreshRules()));
     this._unsubs.push(store.on("bootstrap", () => this._refresh()));
     this._refresh();
@@ -91,12 +100,24 @@ export class AlertsView {
 
   _refreshRules() {
     const cfg = store.get().config;
-    const rules = cfg?.alerts?.rules || (store.get().alerts?.rulesConfig ?? []);
+    const hasConfigRules = Array.isArray(cfg?.alerts?.rules);
+    const rules = hasConfigRules ? cfg.alerts.rules : (store.get().alerts?.rulesConfig ?? null);
     const snap = store.get().snapshot;
     const activeIds = new Set((store.get().alerts?.active || []).map((a) => a.id));
 
-    // Rules come from the /api/config bootstrap; fall back to a static list.
-    const ruleList = rules && rules.length ? rules : DEFAULT_RULES;
+    // Only fall back before config arrives. An explicit empty list is valid.
+    const ruleList = Array.isArray(rules) ? rules : DEFAULT_RULES;
+
+    if (ruleList.length === 0) {
+      this.rulesWrap.replaceChildren(
+        h("div.empty-state", null, [
+          h("span", { html: icon("layers", 36) }),
+          h("div.title", { text: "No alert rules" }),
+          h("div.muted", { text: "Add a rule to start monitoring a threshold." }),
+        ])
+      );
+      return;
+    }
 
     this.rulesWrap.replaceChildren(
       ...ruleList.map((r) => {
@@ -190,7 +211,147 @@ export class AlertsView {
         kv("Current", value != null ? this._fmtValue(r.metric, value) : "n/a"),
         kv("Status", firing ? "FIRING" : "OK"),
       ]),
+      h("div.rule-detail-actions", null, [
+        h("button.btn.sm", {
+          type: "button",
+          html: icon("edit", 14) + " Edit rule",
+          onClick: (event) => {
+            event.stopPropagation();
+            this._openRuleEditor(r);
+          },
+        }),
+      ]),
     ]);
+  }
+
+  _openRuleEditor(existing = null) {
+    const editing = Boolean(existing);
+    const defaults = existing || {
+      id: "",
+      metric: "cpu.usage",
+      operator: ">",
+      threshold: 90,
+      durationMs: 15000,
+      severity: "warning",
+      message: "",
+    };
+
+    const field = (label, control, hint = "") =>
+      h("label.rule-form-field", null, [
+        h("span.field-label", { text: label }),
+        control,
+        hint ? h("span.rule-field-hint", { text: hint }) : null,
+      ]);
+    const input = (name, type, value, extra = {}) =>
+      h("input.field-input", { name, type, value: String(value ?? ""), ...extra });
+    const select = (name, value, options) =>
+      h("select.field-input", { name, value }, options.map(([v, label]) =>
+        h("option", { value: v, selected: v === value, text: label })
+      ));
+
+    const error = h("div.profile-status.is-err", { style: { display: "none" } });
+    const form = h("form.rule-form", null, [
+      h("div.rule-form-grid", null, [
+        field("Rule ID", input("id", "text", defaults.id, {
+          maxlength: "64", pattern: "[A-Za-z0-9._-]+", required: true,
+          placeholder: "cpu-high-custom",
+        }), "Unique: letters, numbers, dot, dash, underscore"),
+        field("Severity", select("severity", defaults.severity, [
+          ["warning", "Warning"], ["critical", "Critical"],
+        ])),
+        field("Metric", select("metric", defaults.metric, METRIC_OPTIONS)),
+        field("Operator", select("operator", defaults.operator, OPERATOR_OPTIONS)),
+        field("Threshold", input("threshold", "number", defaults.threshold, {
+          step: "any", required: true,
+        })),
+        field("Sustained for (seconds)", input(
+          "durationSeconds", "number", (defaults.durationMs || 0) / 1000,
+          { min: "0", max: "604800", step: "1", required: true }
+        ), "Use 0 to fire immediately"),
+      ]),
+      field("Message", h("textarea.field-input.rule-message", {
+        name: "message", maxlength: "240", required: true,
+        placeholder: "Describe what this alert means",
+        text: defaults.message || "",
+      })),
+      error,
+    ]);
+
+    const cancel = h("button.btn.ghost", { type: "button" }, "Cancel");
+    const save = h("button.btn.primary", {
+      type: "submit",
+      html: icon("check", 15) + (editing ? " Save changes" : " Add rule"),
+    });
+    const dialog = modal({
+      title: editing ? `Edit ${existing.id}` : "Add alert rule",
+      subtitle: "Changes are applied immediately and persist across restarts.",
+      icon: "alerts",
+      size: "lg",
+      body: form,
+      footer: [cancel, save],
+      closeOnScrim: false,
+    });
+    cancel.addEventListener("click", () => dialog.close());
+
+    form.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      if (!form.reportValidity()) return;
+      const data = new FormData(form);
+      const threshold = Number(data.get("threshold"));
+      const durationSeconds = Number(data.get("durationSeconds"));
+      if (!Number.isFinite(threshold) || !Number.isFinite(durationSeconds)) {
+        this._showRuleError(error, "Threshold and duration must be valid numbers");
+        return;
+      }
+      const rule = {
+        id: String(data.get("id") || "").trim(),
+        metric: String(data.get("metric") || ""),
+        operator: String(data.get("operator") || ""),
+        threshold,
+        durationMs: Math.round(durationSeconds * 1000),
+        severity: String(data.get("severity") || "warning"),
+        message: String(data.get("message") || "").trim(),
+      };
+      save.disabled = true;
+      save.classList.add("is-busy");
+      error.style.display = "none";
+      try {
+        const url = editing
+          ? `/api/alert-rules/${encodeURIComponent(existing.id)}`
+          : "/api/alert-rules";
+        const response = await authedFetch(url, {
+          method: editing ? "PUT" : "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(rule),
+        });
+        const payload = await response.json().catch(() => ({}));
+        if (!response.ok) throw new Error(payload.error || "Could not save rule");
+        const state = store.get();
+        if (!state.config) state.config = {};
+        if (!state.config.alerts) state.config.alerts = {};
+        state.config.alerts.rules = payload.rules || [];
+        store.emit("config", state.config);
+        this._expanded.delete(existing?.id);
+        this._expanded.add(rule.id);
+        this._refreshRules();
+        dialog.close();
+        notify.success(editing ? "Rule updated" : "Rule added", `${rule.id} is now active`);
+      } catch (err) {
+        this._showRuleError(error, err.message || "Could not save rule");
+      } finally {
+        save.disabled = false;
+        save.classList.remove("is-busy");
+      }
+    });
+
+    // Footer submit button belongs outside the form; forward it explicitly.
+    save.addEventListener("click", () => form.requestSubmit());
+    dialog.open();
+  }
+
+  _showRuleError(el, message) {
+    el.textContent = message;
+    el.style.display = "";
   }
 
   _refreshLog() {
@@ -236,6 +397,30 @@ const DEFAULT_RULES = [
   { id: "load-high", metric: "load.load1PerCore", operator: ">", threshold: 2, severity: "warning" },
   { id: "temp-high", metric: "thermal.maxTemp", operator: ">", threshold: 85, severity: "warning" },
   { id: "swap-high", metric: "memory.swapUsedPercent", operator: ">", threshold: 80, severity: "warning" },
+];
+
+const METRIC_OPTIONS = [
+  ["cpu.usage", "CPU usage (%)"],
+  ["cpu.iowait", "CPU I/O wait (%)"],
+  ["cpu.system", "CPU system (%)"],
+  ["memory.usedPercent", "Memory used (%)"],
+  ["memory.swapUsedPercent", "Swap used (%)"],
+  ["load.load1", "Load average (1m)"],
+  ["load.load1PerCore", "Load per core (1m)"],
+  ["load.load5PerCore", "Load per core (5m)"],
+  ["disk.maxUsedPercent", "Highest disk usage (%)"],
+  ["thermal.maxTemp", "Highest temperature (°C)"],
+  ["network.totalRxBytesPerSec", "Network receive (bytes/s)"],
+  ["network.totalTxBytesPerSec", "Network transmit (bytes/s)"],
+];
+
+const OPERATOR_OPTIONS = [
+  [">", "Greater than (>)"],
+  [">=", "Greater than or equal (>=)"],
+  ["<", "Less than (<)"],
+  ["<=", "Less than or equal (<=)"],
+  ["==", "Equal (==)"],
+  ["!=", "Not equal (!=)"],
 ];
 
 function resolveMetric(path, snap) {

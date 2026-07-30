@@ -128,7 +128,12 @@ async fn main() -> ExitCode {
             "web shell ENABLED: authenticated users can run commands as this process's user"
         );
     }
-    let state = AppState::with_options(config, enable_shell, None);
+    let state = AppState::with_options(
+        config,
+        enable_shell,
+        None,
+        Some(std::path::PathBuf::from("sysmon-rules.json")),
+    );
     sysmon::sampler::spawn(state.clone());
 
     let app = web::build_router(state.clone());

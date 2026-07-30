@@ -120,6 +120,10 @@ fn build_bootstrap(state: &AppState) -> serde_json::Value {
                 "fastIntervalMs": state.config().sampling.fast_interval_ms,
                 "processIntervalMs": state.config().sampling.process_interval_ms,
             },
+            "alerts": {
+                "enabled": state.config().alerts.enabled,
+                "rules": state.alert_rules(),
+            },
         },
         "serverTime": crate::state::now_millis(),
     })
@@ -137,10 +141,7 @@ fn handle_command(state: &AppState, text: &str) -> Option<String> {
     match cmd {
         "ping" => Some(json!({"type": "pong", "t": crate::state::now_millis()}).to_string()),
         "history" => {
-            let points = value
-                .get("points")
-                .and_then(|v| v.as_u64())
-                .unwrap_or(600) as usize;
+            let points = value.get("points").and_then(|v| v.as_u64()).unwrap_or(600) as usize;
             Some(
                 json!({
                     "type": "historyFull",

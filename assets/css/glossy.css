@@ -205,6 +205,30 @@
   box-shadow: 0 0 0 3px var(--accent-soft);
 }
 .form-actions { display: flex; gap: 10px; margin-top: 2px; }
+
+/* Alert rule editor */
+.rule-form { display: flex; flex-direction: column; gap: 16px; }
+.rule-form-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+}
+.rule-form-field { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.rule-field-hint { color: var(--text-3); font-size: 11px; line-height: 1.35; }
+.rule-message { min-height: 88px; resize: vertical; font-family: inherit; }
+.rule-detail-actions {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+}
+.rule-add-btn { white-space: nowrap; }
+.btn.is-busy { opacity: .72; cursor: wait; pointer-events: none; }
+@media (max-width: 640px) {
+  .rule-form-grid { grid-template-columns: 1fr; }
+  .modal-body { padding: var(--sp-4); }
+}
 .profile-status {
   font-size: 13px;
   padding: 8px 11px;

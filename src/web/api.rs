@@ -2,9 +2,10 @@
 //! stream but as one-shot JSON responses, which is convenient for scripting,
 //! health checks, and initial page hydration.
 
+use crate::state::config::AlertRuleConfig;
 use crate::state::store::AppState;
 use axum::{
-    extract::{Query, State},
+    extract::{Path, Query, State},
     http::StatusCode,
     response::IntoResponse,
     Json,
@@ -59,9 +60,7 @@ pub async fn processes(
 
     pm.processes.sort_by(|a, b| {
         let ord = match sort.as_str() {
-            "mem" | "memory" => a
-                .rss_bytes
-                .cmp(&b.rss_bytes),
+            "mem" | "memory" => a.rss_bytes.cmp(&b.rss_bytes),
             "pid" => a.pid.cmp(&b.pid),
             "name" => a.name.to_lowercase().cmp(&b.name.to_lowercase()),
             "threads" => a.threads.cmp(&b.threads),
@@ -98,6 +97,43 @@ pub async fn alerts(
     }))
 }
 
+/// POST /api/alert-rules - validate, persist, and activate a new rule.
+pub async fn add_alert_rule(
+    State(state): State<AppState>,
+    Json(rule): Json<AlertRuleConfig>,
+) -> impl IntoResponse {
+    match state.add_alert_rule(rule) {
+        Ok(rules) => (
+            StatusCode::CREATED,
+            Json(json!({ "ok": true, "rules": rules })),
+        ),
+        Err(error) => (
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "ok": false, "error": error })),
+        ),
+    }
+}
+
+/// PUT /api/alert-rules/:id - replace one existing rule. The body may rename
+/// the rule as long as the new ID remains unique.
+pub async fn update_alert_rule(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Json(rule): Json<AlertRuleConfig>,
+) -> impl IntoResponse {
+    match state.update_alert_rule(&id, rule) {
+        Ok(rules) => (StatusCode::OK, Json(json!({ "ok": true, "rules": rules }))),
+        Err(error) if error == "Rule not found" => (
+            StatusCode::NOT_FOUND,
+            Json(json!({ "ok": false, "error": error })),
+        ),
+        Err(error) => (
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "ok": false, "error": error })),
+        ),
+    }
+}
+
 /// GET /api/config - the effective UI-relevant configuration.
 pub async fn config(State(state): State<AppState>) -> impl IntoResponse {
     let cfg = state.config();
@@ -110,7 +146,7 @@ pub async fn config(State(state): State<AppState>) -> impl IntoResponse {
         },
         "alerts": {
             "enabled": cfg.alerts.enabled,
-            "rules": cfg.alerts.rules,
+            "rules": state.alert_rules(),
         },
     }))
 }
