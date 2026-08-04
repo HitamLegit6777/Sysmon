@@ -5,7 +5,6 @@
 use portable_pty::{CommandBuilder, NativePtySystem, PtySize, PtySystem};
 use serde::Deserialize;
 use std::io::{Read, Write};
-use std::sync::Arc;
 use tokio::sync::mpsc;
 
 /// A client→server control message on the shell socket.
@@ -39,7 +38,7 @@ impl ShellSession {
                 pixel_width: 0,
                 pixel_height: 0,
             })
-            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))?;
+            .map_err(|e| std::io::Error::other(e.to_string()))?;
 
         let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_string());
         let mut cmd = CommandBuilder::new(&shell);
@@ -50,18 +49,18 @@ impl ShellSession {
         let child = pair
             .slave
             .spawn_command(cmd)
-            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))?;
+            .map_err(|e| std::io::Error::other(e.to_string()))?;
         // Slave handle is owned by the child now; drop our copy.
         drop(pair.slave);
 
         let mut reader = pair
             .master
             .try_clone_reader()
-            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))?;
+            .map_err(|e| std::io::Error::other(e.to_string()))?;
         let writer = pair
             .master
             .take_writer()
-            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))?;
+            .map_err(|e| std::io::Error::other(e.to_string()))?;
 
         // Reader loop on a blocking thread, forwarding chunks to an async channel.
         // Bound queued output so a slow/disconnected browser cannot grow server
@@ -93,19 +92,21 @@ impl ShellSession {
     }
 
     /// Write user input to the PTY.
-    pub fn write_input(&mut self, data: &[u8]) {
-        let _ = self.writer.write_all(data);
-        let _ = self.writer.flush();
+    pub fn write_input(&mut self, data: &[u8]) -> std::io::Result<()> {
+        self.writer.write_all(data)?;
+        self.writer.flush()
     }
 
     /// Resize the PTY.
-    pub fn resize(&self, cols: u16, rows: u16) {
-        let _ = self.master.resize(PtySize {
-            rows: rows.clamp(2, 500),
-            cols: cols.clamp(2, 1000),
-            pixel_width: 0,
-            pixel_height: 0,
-        });
+    pub fn resize(&self, cols: u16, rows: u16) -> std::io::Result<()> {
+        self.master
+            .resize(PtySize {
+                rows: rows.clamp(2, 500),
+                cols: cols.clamp(2, 1000),
+                pixel_width: 0,
+                pixel_height: 0,
+            })
+            .map_err(|e| std::io::Error::other(e.to_string()))
     }
 }
 
@@ -116,6 +117,3 @@ impl Drop for ShellSession {
         let _ = self.child.kill();
     }
 }
-
-/// Wrap a session for shared mutable access from the WebSocket task.
-pub type SharedShell = Arc<parking_lot::Mutex<ShellSession>>;

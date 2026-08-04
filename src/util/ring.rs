@@ -104,18 +104,19 @@ impl<T: Clone> RingBuffer<T> {
         if all.len() <= max_points || max_points == 0 {
             return all;
         }
-        let stride = (all.len() + max_points - 1) / max_points;
-        let mut out: Vec<T> = Vec::with_capacity(max_points + 1);
+        if max_points == 1 {
+            return vec![all[all.len() - 1].clone()];
+        }
+        let last_idx = all.len() - 1;
+        let stride = last_idx.div_ceil(max_points - 1);
+        let mut out: Vec<T> = Vec::with_capacity(max_points);
         let mut i = 0;
-        while i < all.len() {
+        while i < last_idx && out.len() < max_points - 1 {
             out.push(all[i].clone());
             i += stride;
         }
         // Ensure the newest sample is present for an accurate right edge.
-        let last_idx = all.len() - 1;
-        if (last_idx) % stride != 0 {
-            out.push(all[last_idx].clone());
-        }
+        out.push(all[last_idx].clone());
         out
     }
 
@@ -171,8 +172,17 @@ mod tests {
             rb.push(i);
         }
         let ds = rb.downsample(10);
-        assert!(ds.len() <= 11);
-        assert_eq!(*ds.last().unwrap(), 99);
+        assert!(ds.len() <= 10);
+        assert_eq!(ds.last(), Some(&99));
+    }
+
+    #[test]
+    fn test_downsample_one_returns_latest() {
+        let mut rb: RingBuffer<i32> = RingBuffer::new(3);
+        rb.push(1);
+        rb.push(2);
+        rb.push(3);
+        assert_eq!(rb.downsample(1), vec![3]);
     }
 
     #[test]

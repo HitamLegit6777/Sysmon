@@ -37,7 +37,10 @@ impl LoadCollector {
 
         let uptime = procfs::read_to_string_safe("/proc/uptime");
         let up_tokens = procfs::tokenize(&uptime);
-        let uptime_seconds = up_tokens.first().and_then(|s| s.parse().ok()).unwrap_or(0.0);
+        let uptime_seconds = up_tokens
+            .first()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(0.0);
         let idle_seconds = up_tokens.get(1).and_then(|s| s.parse().ok()).unwrap_or(0.0);
 
         let r2 = |v: f64| crate::util::format::round_to(v, 2);

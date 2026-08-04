@@ -20,6 +20,8 @@ const TITLES = {
   thermal: ["Thermal", "Temperatures, cooling, and power"],
   alerts: ["Alerts", "Threshold rules and recent events"],
   info: ["System Info", "Host, kernel, and hardware details"],
+  profile: ["Profile", "Account, password, and appearance"],
+  terminal: ["Terminal", "Authenticated server shell"],
 };
 
 export function buildTopbar(options = {}) {
@@ -98,6 +100,21 @@ export function buildTopbar(options = {}) {
   };
   router.onChange(setTitle);
   setTitle(router.currentPath());
+
+  // Show which server the live data belongs to (hub host vs agent).
+  const serverChip = h("div.chip.server-chip", { title: "Selected server" }, [
+    h("span.k", { text: "Server" }),
+    h("span.v", { text: store.get().activeServerName || "this host" }),
+  ]);
+  el.querySelector(".spacer").before(serverChip);
+  store.on("bootstrap", () => {
+    serverChip.querySelector(".v").textContent =
+      store.get().activeServerName || store.get().activeServer || "this host";
+  });
+  store.on("fleet", () => {
+    const name = store.get().activeServerName;
+    if (name) serverChip.querySelector(".v").textContent = name;
+  });
 
   // Connection status.
   store.on("connection", ({ connected, connecting }) => {

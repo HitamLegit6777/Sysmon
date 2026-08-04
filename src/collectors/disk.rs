@@ -36,10 +36,29 @@ extern "C" {
 /// Filesystem types that are virtual/pseudo and should be excluded from the
 /// capacity view because they do not represent real storage.
 const VIRTUAL_FS: &[&str] = &[
-    "proc", "sysfs", "devtmpfs", "devpts", "tmpfs", "securityfs", "cgroup",
-    "cgroup2", "pstore", "bpf", "autofs", "mqueue", "debugfs", "tracefs",
-    "hugetlbfs", "fusectl", "configfs", "ramfs", "binfmt_misc", "rpc_pipefs",
-    "nsfs", "overlay", "squashfs",
+    "proc",
+    "sysfs",
+    "devtmpfs",
+    "devpts",
+    "tmpfs",
+    "securityfs",
+    "cgroup",
+    "cgroup2",
+    "pstore",
+    "bpf",
+    "autofs",
+    "mqueue",
+    "debugfs",
+    "tracefs",
+    "hugetlbfs",
+    "fusectl",
+    "configfs",
+    "ramfs",
+    "binfmt_misc",
+    "rpc_pipefs",
+    "nsfs",
+    "overlay",
+    "squashfs",
 ];
 
 fn is_virtual_fs(fs_type: &str) -> bool {
@@ -121,9 +140,9 @@ impl DiskCollector {
             } else {
                 vfs.f_bsize
             };
-            let total = vfs.f_blocks * block_size;
-            let available = vfs.f_bavail * block_size;
-            let free = vfs.f_bfree * block_size;
+            let total = vfs.f_blocks.saturating_mul(block_size);
+            let available = vfs.f_bavail.saturating_mul(block_size);
+            let free = vfs.f_bfree.saturating_mul(block_size);
             let used = total.saturating_sub(free);
             if total == 0 {
                 continue;
@@ -135,10 +154,7 @@ impl DiskCollector {
             let inodes_free = vfs.f_ffree;
             let inodes_used = inodes_total.saturating_sub(inodes_free);
             let inodes_used_percent = if inodes_total > 0 {
-                crate::util::format::round_to(
-                    (inodes_used as f64 / inodes_total as f64) * 100.0,
-                    1,
-                )
+                crate::util::format::round_to((inodes_used as f64 / inodes_total as f64) * 100.0, 1)
             } else {
                 0.0
             };
@@ -157,7 +173,7 @@ impl DiskCollector {
                 inodes_used_percent,
             });
         }
-        out.sort_by(|a, b| b.total.cmp(&a.total));
+        out.sort_by_key(|fs| std::cmp::Reverse(fs.total));
         out
     }
 
@@ -198,8 +214,16 @@ impl DiskCollector {
             current.insert(name.clone(), stat);
 
             let prev = self.prev_stats.get(&name).copied().unwrap_or_default();
-            let read_bps = rate(stat.sectors_read * SECTOR_SIZE, prev.sectors_read * SECTOR_SIZE, delta_ms);
-            let write_bps = rate(stat.sectors_written * SECTOR_SIZE, prev.sectors_written * SECTOR_SIZE, delta_ms);
+            let read_bps = rate(
+                stat.sectors_read.saturating_mul(SECTOR_SIZE),
+                prev.sectors_read.saturating_mul(SECTOR_SIZE),
+                delta_ms,
+            );
+            let write_bps = rate(
+                stat.sectors_written.saturating_mul(SECTOR_SIZE),
+                prev.sectors_written.saturating_mul(SECTOR_SIZE),
+                delta_ms,
+            );
             let read_ops = rate(stat.reads_completed, prev.reads_completed, delta_ms);
             let write_ops = rate(stat.writes_completed, prev.writes_completed, delta_ms);
             let util = if delta_ms > 0 {
@@ -210,7 +234,11 @@ impl DiskCollector {
             };
 
             // Only surface devices with activity or that are whole disks.
-            let is_whole = !name.chars().last().map(|c| c.is_ascii_digit()).unwrap_or(false)
+            let is_whole = !name
+                .chars()
+                .last()
+                .map(|c| c.is_ascii_digit())
+                .unwrap_or(false)
                 || name.starts_with("nvme")
                 || name.starts_with("mmcblk");
             if !is_whole && read_bps == 0.0 && write_bps == 0.0 {
@@ -259,8 +287,8 @@ impl DiskCollector {
         let mut total_used = 0u64;
         let mut max_used_percent = 0.0f64;
         for fs in &filesystems {
-            total_capacity += fs.total;
-            total_used += fs.used;
+            total_capacity = total_capacity.saturating_add(fs.total);
+            total_used = total_used.saturating_add(fs.used);
             if fs.used_percent > max_used_percent {
                 max_used_percent = fs.used_percent;
             }

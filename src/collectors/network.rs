@@ -36,7 +36,9 @@ impl NetworkCollector {
         let content = procfs::read_to_string_safe("/proc/net/dev");
         let mut map = HashMap::new();
         for line in content.lines() {
-            let Some(colon) = line.find(':') else { continue };
+            let Some(colon) = line.find(':') else {
+                continue;
+            };
             let name = line[..colon].trim().to_string();
             if name.is_empty() {
                 continue;

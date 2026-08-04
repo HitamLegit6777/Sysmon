@@ -209,8 +209,7 @@ impl ProcessCollector {
         };
         let core_count = num_cpus::get().max(1) as f64;
         // Total available CPU jiffies across all cores in this interval.
-        let interval_jiffies =
-            (delta_ms as f64 / 1000.0) * self.clock_ticks * core_count;
+        let interval_jiffies = (delta_ms as f64 / 1000.0) * self.clock_ticks * core_count;
 
         let mut processes = Vec::new();
         let mut new_prev: HashMap<i64, PrevProc> = HashMap::new();
@@ -229,7 +228,7 @@ impl ProcessCollector {
                 continue;
             };
 
-            let total_time = sf.utime + sf.stime;
+            let total_time = sf.utime.saturating_add(sf.stime);
             new_prev.insert(pid, PrevProc { total_time });
 
             let cpu_percent = if interval_jiffies > 0.0 {
@@ -247,7 +246,7 @@ impl ProcessCollector {
                 0.0
             };
 
-            let rss_bytes = sf.rss_pages * self.page_size;
+            let rss_bytes = sf.rss_pages.saturating_mul(self.page_size);
             let mem_percent = if self.total_memory > 0 {
                 crate::util::format::round_to(
                     (rss_bytes as f64 / self.total_memory as f64) * 100.0,

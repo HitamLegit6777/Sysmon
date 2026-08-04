@@ -127,7 +127,7 @@ mod tests {
 
     #[test]
     fn test_round_to() {
-        assert_eq!(round_to(3.14159, 2), 3.14);
+        assert_eq!(round_to(1.23456, 2), 1.23);
         assert_eq!(round_to(2.5, 0), 3.0);
     }
 

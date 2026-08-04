@@ -133,7 +133,7 @@ export function showLogin(onSuccess) {
       h("div.auth-sub", { text: "Real-time server monitoring" }),
     ]),
     form,
-    h("div.auth-hint", { html: 'Default credentials: <b>admin</b> / <b>admin123</b>' }),
+    h("div.auth-hint", { text: "Sign in with the credentials configured by the server administrator." }),
   ]);
 
   app.append(

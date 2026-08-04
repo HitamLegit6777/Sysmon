@@ -8,8 +8,7 @@
  *
  * Wire protocol (JSON text frames over /shell/ws):
  *   client -> server: {type:"input", data} | {type:"resize", cols, rows}
- *   server -> client: raw PTY bytes (text frames)
- *
+ *   server -> client: UTF-8 text frames decoded lossily from PTY bytes
  * Only reachable when the server was started with --enable-shell (the sidebar
  * link is hidden otherwise, and the socket itself is auth + flag gated).
  */
@@ -208,9 +207,8 @@ export class TerminalView {
       }
     };
     ws.onmessage = (ev) => {
-      const text =
-        typeof ev.data === "string" ? ev.data : new TextDecoder().decode(ev.data);
-      if (this._term) this._term.write(text);
+      const data = typeof ev.data === "string" ? ev.data : new Uint8Array(ev.data);
+      if (this._term) this._term.write(data);
     };
     ws.onclose = () => {
       if (this._closed) return;

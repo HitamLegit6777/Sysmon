@@ -2,9 +2,8 @@
 
 use crate::state::store::AppState;
 use axum::{
-    body::Body,
     extract::{ConnectInfo, Request, State},
-    http::{header, StatusCode},
+    http::{header, HeaderMap, StatusCode},
     middleware::Next,
     response::{IntoResponse, Response},
     Json,
@@ -19,14 +18,15 @@ pub const COOKIE_NAME: &str = "sysmon_session";
 /// middleware and the WebSocket handlers (which authenticate at upgrade time
 /// rather than through the `require_auth` middleware).
 pub fn token_from_request(req: &Request) -> Option<String> {
-    let cookies = req.headers().get(header::COOKIE)?.to_str().ok()?;
-    for part in cookies.split(';') {
-        let part = part.trim();
-        if let Some(rest) = part.strip_prefix(&format!("{}=", COOKIE_NAME)) {
-            return Some(rest.to_string());
-        }
-    }
-    None
+    token_from_headers(req.headers())
+}
+
+fn token_from_headers(headers: &HeaderMap) -> Option<String> {
+    let cookies = headers.get(header::COOKIE)?.to_str().ok()?;
+    cookies.split(';').find_map(|part| {
+        let (name, value) = part.trim().split_once('=')?;
+        (name == COOKIE_NAME && !value.is_empty()).then(|| value.to_string())
+    })
 }
 
 /// Reject browser requests whose Origin does not match Host. Non-browser
@@ -80,12 +80,31 @@ pub struct LoginBody {
     password: String,
 }
 
+fn session_cookie(token: &str, secure: bool) -> String {
+    format!(
+        "{}={}; Path=/; HttpOnly; SameSite=Strict; Max-Age=43200{}",
+        COOKIE_NAME,
+        token,
+        if secure { "; Secure" } else { "" }
+    )
+}
+
+fn request_is_https(headers: &HeaderMap) -> bool {
+    headers
+        .get("x-forwarded-proto")
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.split(',').next())
+        .is_some_and(|proto| proto.trim().eq_ignore_ascii_case("https"))
+}
+
 /// POST /api/auth/login — set a session cookie on success.
 pub async fn login(
     State(state): State<AppState>,
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
     Json(body): Json<LoginBody>,
 ) -> Response {
+    let secure = request_is_https(&headers);
     let peer = peer.ip().to_string();
     if let Err(retry_after) = state.auth().login_allowed(&peer) {
         let mut response = (
@@ -101,18 +120,16 @@ pub async fn login(
     match state.auth().login(&body.username, &body.password) {
         Some(token) => {
             state.auth().record_login_result(&peer, true);
-            let cookie = format!(
-                "{}={}; Path=/; HttpOnly; SameSite=Strict; Max-Age=43200",
-                COOKIE_NAME, token
-            );
+            let cookie = session_cookie(&token, secure);
             let mut resp = Json(json!({
                 "ok": true,
                 "username": state.auth().username(),
                 "preferences": state.auth().preferences(),
             }))
             .into_response();
-            resp.headers_mut()
-                .insert(header::SET_COOKIE, cookie.parse().unwrap());
+            if let Ok(value) = cookie.parse() {
+                resp.headers_mut().insert(header::SET_COOKIE, value);
+            }
             resp
         }
         None => (
@@ -132,12 +149,18 @@ pub async fn logout(State(state): State<AppState>, req: Request) -> Response {
         state.auth().logout(&token);
     }
     let clear = format!(
-        "{}=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0",
-        COOKIE_NAME
+        "{}=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0{}",
+        COOKIE_NAME,
+        if request_is_https(req.headers()) {
+            "; Secure"
+        } else {
+            ""
+        }
     );
     let mut resp = Json(json!({ "ok": true })).into_response();
-    resp.headers_mut()
-        .insert(header::SET_COOKIE, clear.parse().unwrap());
+    if let Ok(value) = clear.parse() {
+        resp.headers_mut().insert(header::SET_COOKIE, value);
+    }
     resp
 }
 
@@ -162,11 +185,13 @@ pub struct ChangePasswordBody {
 /// POST /api/auth/password — change the password (invalidates other sessions).
 pub async fn change_password(
     State(state): State<AppState>,
+    headers: HeaderMap,
     Json(body): Json<ChangePasswordBody>,
 ) -> Response {
+    let token = token_from_headers(&headers);
     match state
         .auth()
-        .change_password(&body.current_password, &body.new_password)
+        .change_password(&body.current_password, &body.new_password, token.as_deref())
     {
         Ok(()) => Json(json!({ "ok": true })).into_response(),
         Err(msg) => (StatusCode::BAD_REQUEST, Json(json!({ "error": msg }))).into_response(),
@@ -184,11 +209,13 @@ pub struct ChangeUsernameBody {
 /// POST /api/auth/username — change the username.
 pub async fn change_username(
     State(state): State<AppState>,
+    headers: HeaderMap,
     Json(body): Json<ChangeUsernameBody>,
 ) -> Response {
+    let token = token_from_headers(&headers);
     match state
         .auth()
-        .change_username(&body.current_password, &body.new_username)
+        .change_username(&body.current_password, &body.new_username, token.as_deref())
     {
         Ok(()) => Json(json!({ "ok": true, "username": state.auth().username() })).into_response(),
         Err(msg) => (StatusCode::BAD_REQUEST, Json(json!({ "error": msg }))).into_response(),
@@ -207,8 +234,3 @@ pub async fn set_preferences(
         Err(error) => (StatusCode::BAD_REQUEST, Json(json!({ "error": error }))).into_response(),
     }
 }
-
-/// A permissive body reader for endpoints that ignore the request body but must
-/// still accept it (keeps axum extractor ordering simple). Unused placeholder.
-#[allow(dead_code)]
-async fn _drain(_body: Body) {}

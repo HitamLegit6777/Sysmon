@@ -41,6 +41,7 @@ import { AlertsView } from "./views/alerts.js";
 import { InfoView } from "./views/info.js";
 import { ProfileView } from "./views/profile.js";
 import { TerminalView } from "./views/terminal.js";
+import { FleetView } from "./views/fleet.js";
 
 function buildShell() {
   const app = qs("#app");
@@ -81,6 +82,7 @@ function buildShell() {
 
 function registerRoutes() {
   router.register("overview", () => new OverviewView());
+  router.register("fleet", () => new FleetView());
   router.register("cpu", () => new CpuView());
   router.register("memory", () => new MemoryView());
   router.register("network", () => new NetworkView());
@@ -210,6 +212,13 @@ function wireStoreToRouter() {
   });
 }
 
+function wirePause() {
+  window.addEventListener("sysmon:pause", (event) => {
+    if (event.detail?.paused) ws.disconnect();
+    else ws.connect();
+  });
+}
+
 function wireAlerts() {
   store.on("alertEvent", (ev) => {
     if (ev.transition === "fired") {
@@ -252,6 +261,7 @@ function startDashboard() {
   wireCommands();
   wireStoreToRouter();
   wireAlerts();
+  wirePause();
   router.start(viewRoot);
   ws.connect();
 

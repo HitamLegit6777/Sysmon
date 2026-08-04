@@ -61,7 +61,8 @@ impl Default for AuthDoc {
     fn default() -> Self {
         AuthDoc {
             username: "admin".into(),
-            password_hash: hash_password("admin123"),
+            password_hash: hash_password("admin123")
+                .expect("Argon2 default parameters must produce a password hash"),
             preferences: Preferences::default(),
         }
     }
@@ -120,12 +121,11 @@ fn secure_write(path: &std::path::Path, data: &[u8]) -> std::io::Result<()> {
 }
 
 /// Argon2id hash of a plaintext password, returned as a PHC string.
-fn hash_password(plain: &str) -> String {
+fn hash_password(plain: &str) -> Result<String, argon2::password_hash::Error> {
     let salt = SaltString::generate(&mut OsRng);
     Argon2::default()
         .hash_password(plain.as_bytes(), &salt)
-        .map(|h| h.to_string())
-        .unwrap_or_default()
+        .map(|hash| hash.to_string())
 }
 
 /// A random URL-safe 256-bit session token.
@@ -185,13 +185,15 @@ impl Auth {
             .ok()
             .and_then(|hash| Argon2::default().verify_password(b"admin123", &hash).ok())
             .is_some();
+        let dummy_password_hash = hash_password("sysmon-dummy-password")
+            .expect("Argon2 default parameters must produce a password hash");
         Auth {
             inner: Arc::new(AuthInner {
                 doc: RwLock::new(doc),
                 sessions: RwLock::new(HashMap::new()),
                 login_attempts: RwLock::new(HashMap::new()),
                 default_credentials: AtomicBool::new(default_credentials),
-                dummy_password_hash: hash_password("sysmon-dummy-password"),
+                dummy_password_hash,
                 persist_lock: Mutex::new(()),
                 path,
             }),
@@ -313,11 +315,12 @@ impl Auth {
         }
         let mut sessions = self.inner.sessions.write();
         let sess = sessions.get_mut(token)?;
-        if sess.expires_at < now_secs() {
+        let now = now_secs();
+        if sess.expires_at <= now {
             sessions.remove(token);
             return None;
         }
-        sess.expires_at = now_secs() + SESSION_TTL_SECS;
+        sess.expires_at = now + SESSION_TTL_SECS;
         Some(sess.username.clone())
     }
 
@@ -326,9 +329,14 @@ impl Auth {
         self.inner.sessions.write().remove(token);
     }
 
-    /// Change the password after verifying the current one. Invalidates all
-    /// existing sessions on success (forces re-login everywhere).
-    pub fn change_password(&self, current: &str, next: &str) -> Result<(), &'static str> {
+    /// Change the password after verifying the current one. Invalidates every
+    /// session except the caller's so the successful request can finish cleanly.
+    pub fn change_password(
+        &self,
+        current: &str,
+        next: &str,
+        current_token: Option<&str>,
+    ) -> Result<(), &'static str> {
         if next.len() < 12 || next.len() > 1024 {
             return Err("New password must be 12-1024 characters");
         }
@@ -339,19 +347,29 @@ impl Auth {
                 .verify_password(current.as_bytes(), &parsed)
                 .map_err(|_| "Current password is incorrect")?;
         }
-        let mut updated = self.inner.doc.read().clone();
-        updated.password_hash = hash_password(next);
+        let mut doc = self.inner.doc.write();
+        let mut updated = doc.clone();
+        updated.password_hash = hash_password(next).map_err(|_| "Failed to hash password")?;
         self.persist_doc(&updated)?;
-        *self.inner.doc.write() = updated;
+        *doc = updated;
         self.inner
             .default_credentials
             .store(false, Ordering::Relaxed);
-        self.inner.sessions.write().clear();
+        self.inner
+            .sessions
+            .write()
+            .retain(|token, _| current_token == Some(token.as_str()));
         Ok(())
     }
 
-    /// Change the username (requires the current password for confirmation).
-    pub fn change_username(&self, current_password: &str, next: &str) -> Result<(), &'static str> {
+    /// Change the username after confirming the password. Keeps the caller's
+    /// session and updates its identity; invalidates every other session.
+    pub fn change_username(
+        &self,
+        current_password: &str,
+        next: &str,
+        current_token: Option<&str>,
+    ) -> Result<(), &'static str> {
         let next = next.trim();
         if next.is_empty() || next.len() > 32 {
             return Err("Username must be 1-32 characters");
@@ -363,11 +381,16 @@ impl Auth {
                 .verify_password(current_password.as_bytes(), &parsed)
                 .map_err(|_| "Current password is incorrect")?;
         }
-        let mut updated = self.inner.doc.read().clone();
+        let mut doc = self.inner.doc.write();
+        let mut updated = doc.clone();
         updated.username = next.to_string();
         self.persist_doc(&updated)?;
-        *self.inner.doc.write() = updated;
-        self.inner.sessions.write().clear();
+        *doc = updated;
+        let mut sessions = self.inner.sessions.write();
+        sessions.retain(|token, _| current_token == Some(token.as_str()));
+        for session in sessions.values_mut() {
+            session.username = next.to_string();
+        }
         Ok(())
     }
 
@@ -382,10 +405,11 @@ impl Auth {
         ) {
             return Err("Unsupported accent");
         }
-        let mut updated = self.inner.doc.read().clone();
+        let mut doc = self.inner.doc.write();
+        let mut updated = doc.clone();
         updated.preferences = prefs;
         self.persist_doc(&updated)?;
-        *self.inner.doc.write() = updated;
+        *doc = updated;
         Ok(())
     }
 }
@@ -421,9 +445,9 @@ mod tests {
     #[test]
     fn change_password_flow() {
         let a = temp_auth();
-        assert!(a.change_password("wrong", "newpass").is_err());
-        assert!(a.change_password("admin123", "abc").is_err()); // too short
-        assert!(a.change_password("admin123", "newpass12345").is_ok());
+        assert!(a.change_password("wrong", "newpass", None).is_err());
+        assert!(a.change_password("admin123", "abc", None).is_err()); // too short
+        assert!(a.change_password("admin123", "newpass12345", None).is_ok());
         assert!(a.login("admin", "admin123").is_none());
         assert!(a.login("admin", "newpass12345").is_some());
     }
@@ -431,7 +455,7 @@ mod tests {
     #[test]
     fn change_username_flow() {
         let a = temp_auth();
-        assert!(a.change_username("admin123", "operator").is_ok());
+        assert!(a.change_username("admin123", "operator", None).is_ok());
         assert_eq!(a.username(), "operator");
         assert!(a.login("operator", "admin123").is_some());
     }

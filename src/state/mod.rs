@@ -17,8 +17,3 @@ pub fn now_millis() -> u64 {
         .map(|d| d.as_millis() as u64)
         .unwrap_or(0)
 }
-
-/// Seconds since the UNIX epoch.
-pub fn now_secs() -> u64 {
-    now_millis() / 1000
-}

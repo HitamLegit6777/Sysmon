@@ -1,6 +1,7 @@
 //! sysmon library root. Exposes the module tree so both the binary and the
 //! integration tests can share the same code.
 
+pub mod agents;
 pub mod alerts;
 pub mod auth;
 pub mod collectors;

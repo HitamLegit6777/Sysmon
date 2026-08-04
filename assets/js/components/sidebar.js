@@ -15,6 +15,7 @@ const NAV = [
     section: "Monitor",
     items: [
       { path: "overview", label: "Overview", icon: "dashboard" },
+      { path: "fleet", label: "Fleet", icon: "server" },
       { path: "cpu", label: "CPU", icon: "cpu" },
       { path: "memory", label: "Memory", icon: "memory" },
       { path: "network", label: "Network", icon: "network" },
@@ -33,6 +34,38 @@ const NAV = [
     ],
   },
 ];
+
+// Live server list (hub host + agents), rendered under a "Servers" group.
+// Built once per sidebar; contents update from the store's fleet heartbeat.
+function buildServerGroup() {
+  const wrap = h("div.server-list");
+  const group = h("div.nav-section-label", { text: "Servers" });
+  const container = h("div", null, [group, wrap]);
+  const render = (fleet, activeServer) => {
+    const entries = [{ id: "self", name: "this host", connected: true }].concat(
+      (fleet || []).map((f) => ({ id: f.id, name: f.name || f.hostname || f.id, connected: f.connected }))
+    );
+    wrap.replaceChildren(
+      ...entries.map((s) => {
+        const el = h(
+          "div.nav-item.server-item" + (s.id === activeServer ? ".active" : ""),
+          {
+            dataset: { server: s.id },
+            onClick: () => {
+              import("../ws.js").then((m) => m.default.selectServer(s.id));
+            },
+          },
+          [
+            h("span.status-dot" + (s.connected ? ".online" : ".offline")),
+            h("span.nav-label.truncate", { text: s.name }),
+          ]
+        );
+        return el;
+      })
+    );
+  };
+  return { container, render };
+}
 
 export function buildSidebar(opts = {}) {
   const shellEnabled = !!opts.shellEnabled;
@@ -62,6 +95,15 @@ export function buildSidebar(opts = {}) {
       nav.appendChild(el);
     }
   }
+  const serverGroup = buildServerGroup();
+  nav.appendChild(serverGroup.container);
+
+  // Live-update the server list from the fleet heartbeat.
+  const renderServers = () =>
+    serverGroup.render(store.get().fleet, store.get().activeServer);
+  store.on("fleet", renderServers);
+  store.on("bootstrap", renderServers);
+  renderServers();
 
   const footer = h("div.sidebar-footer", null, [
     h("div.host-avatar", { text: "?" }),

@@ -133,6 +133,19 @@ pub async fn update_alert_rule(
         ),
     }
 }
+/// DELETE /api/alert-rules/:id - remove one existing rule.
+pub async fn delete_alert_rule(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    match state.remove_alert_rule(&id) {
+        Ok(rules) => (StatusCode::OK, Json(json!({ "ok": true, "rules": rules }))),
+        Err(error) => (
+            StatusCode::NOT_FOUND,
+            Json(json!({ "ok": false, "error": error })),
+        ),
+    }
+}
 
 /// GET /api/config - the effective UI-relevant configuration.
 pub async fn config(State(state): State<AppState>) -> impl IntoResponse {

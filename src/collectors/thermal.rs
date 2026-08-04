@@ -78,8 +78,7 @@ impl ThermalCollector {
                 .to_string();
             if ps_type == "Battery" {
                 battery_present = true;
-                battery_percent =
-                    procfs::read_i64(format!("{}/capacity", base), 0) as f64;
+                battery_percent = procfs::read_i64(format!("{}/capacity", base), 0) as f64;
                 battery_status = procfs::read_first_line(format!("{}/status", base))
                     .trim()
                     .to_string();
@@ -97,8 +96,7 @@ impl ThermalCollector {
     pub fn collect(&mut self) -> ThermalMetrics {
         let zones = Self::collect_zones();
         let cooling = Self::collect_cooling();
-        let (battery_present, battery_percent, battery_status, on_ac_power) =
-            Self::collect_power();
+        let (battery_present, battery_percent, battery_status, on_ac_power) = Self::collect_power();
 
         let mut max_temp = 0.0f64;
         let mut sum = 0.0f64;

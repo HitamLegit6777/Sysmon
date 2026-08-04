@@ -80,8 +80,8 @@ export class ProfileView {
 
     // ---- Password card ----------------------------------------------------
     const curPass = h("input.field-input", { type: "password", placeholder: "Current password", autocomplete: "current-password" });
-    const newPass = h("input.field-input", { type: "password", placeholder: "New password (min 6 chars)", autocomplete: "new-password" });
-    const newPass2 = h("input.field-input", { type: "password", placeholder: "Repeat new password", autocomplete: "new-password" });
+    const newPass = h("input.field-input", { type: "password", placeholder: "New password (min 12 chars)", minlength: "12", maxlength: "1024", autocomplete: "new-password" });
+    const newPass2 = h("input.field-input", { type: "password", placeholder: "Repeat new password", minlength: "12", maxlength: "1024", autocomplete: "new-password" });
     const passStatus = statusLine();
     const passBtn = h("button.btn.btn-primary", { type: "submit", text: "Change password" });
     const passForm = h("form.profile-form", {

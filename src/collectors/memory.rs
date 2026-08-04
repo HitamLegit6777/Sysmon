@@ -18,8 +18,13 @@ impl MemoryCollector {
         for line in content.lines() {
             if let Some(idx) = line.find(':') {
                 let key = line[..idx].trim().to_string();
-                let value_kb = procfs::parse_leading_u64(&line[idx + 1..]);
-                map.insert(key, value_kb * 1024); // normalize to bytes
+                let value = procfs::parse_leading_u64(&line[idx + 1..]);
+                let bytes = if line[idx + 1..].split_whitespace().nth(1) == Some("kB") {
+                    value.saturating_mul(1024)
+                } else {
+                    value
+                };
+                map.insert(key, bytes);
             }
         }
 
@@ -74,8 +79,8 @@ impl MemoryCollector {
             commit_limit: get("CommitLimit"),
             page_tables: get("PageTables"),
             kernel_stack: get("KernelStack"),
-            huge_pages_total: *map.get("HugePages_Total").unwrap_or(&0) / 1024, // count, not bytes
-            huge_pages_free: *map.get("HugePages_Free").unwrap_or(&0) / 1024,
+            huge_pages_total: get("HugePages_Total"),
+            huge_pages_free: get("HugePages_Free"),
         }
     }
 }

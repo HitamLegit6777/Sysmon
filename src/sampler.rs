@@ -5,8 +5,8 @@
 //! reads pseudo-files.
 
 use crate::collectors::{
-    CpuCollector, DiskCollector, HostCollector, LoadCollector, MemoryCollector,
-    NetworkCollector, ProcessCollector, ThermalCollector,
+    CpuCollector, DiskCollector, HostCollector, LoadCollector, MemoryCollector, NetworkCollector,
+    ProcessCollector, ThermalCollector,
 };
 use crate::state::metrics::MetricsSnapshot;
 use crate::state::store::AppState;
@@ -23,8 +23,12 @@ pub fn spawn(state: AppState) {
     spawn_host_refresh(state);
 }
 
+fn effective_period(period_ms: u64) -> u64 {
+    period_ms.max(100)
+}
+
 fn make_interval(period_ms: u64) -> tokio::time::Interval {
-    let mut iv = interval(Duration::from_millis(period_ms.max(100)));
+    let mut iv = interval(Duration::from_millis(effective_period(period_ms)));
     // If the runtime is briefly starved, skip missed ticks rather than
     // bursting to catch up, which would distort rate calculations.
     iv.set_missed_tick_behavior(MissedTickBehavior::Skip);
@@ -32,7 +36,7 @@ fn make_interval(period_ms: u64) -> tokio::time::Interval {
 }
 
 fn spawn_fast(state: AppState) {
-    let period = state.config().sampling.fast_interval_ms;
+    let period = effective_period(state.config().sampling.fast_interval_ms);
     tokio::spawn(async move {
         let mut cpu = CpuCollector::new();
         let mut memory = MemoryCollector::new();
@@ -48,8 +52,7 @@ fn spawn_fast(state: AppState) {
         tokio::time::sleep(Duration::from_millis(period.min(1000))).await;
 
         let mut iv = make_interval(period);
-        let disk_every =
-            (state.config().sampling.disk_interval_ms / period.max(1)).max(1);
+        let disk_every = (state.config().sampling.disk_interval_ms / period.max(1)).max(1);
         let mut tick: u64 = 0;
         let mut last_disk = disk.collect();
 
@@ -57,13 +60,14 @@ fn spawn_fast(state: AppState) {
             iv.tick().await;
             tick += 1;
 
-            let mut snapshot = MetricsSnapshot::default();
-            snapshot.timestamp = crate::state::now_millis();
-            snapshot.cpu = cpu.collect();
-            snapshot.memory = memory.collect();
-            snapshot.load = load.collect();
-            snapshot.network = network.collect();
-
+            let mut snapshot = MetricsSnapshot {
+                timestamp: crate::state::now_millis(),
+                cpu: cpu.collect(),
+                memory: memory.collect(),
+                load: load.collect(),
+                network: network.collect(),
+                ..Default::default()
+            };
             // Disk capacity scanning is comparatively expensive, so refresh it
             // on a slower cadence and reuse the last value in between.
             if tick % disk_every == 0 {
@@ -82,7 +86,7 @@ fn spawn_fast(state: AppState) {
 }
 
 fn spawn_process(state: AppState) {
-    let period = state.config().sampling.process_interval_ms;
+    let period = effective_period(state.config().sampling.process_interval_ms);
     let limit = state.config().sampling.process_limit;
     let want_io = state.config().sampling.process_io;
     tokio::spawn(async move {
@@ -101,7 +105,7 @@ fn spawn_process(state: AppState) {
 }
 
 fn spawn_thermal(state: AppState) {
-    let period = state.config().sampling.thermal_interval_ms;
+    let period = effective_period(state.config().sampling.thermal_interval_ms);
     tokio::spawn(async move {
         let mut collector = ThermalCollector::new();
         let mut iv = make_interval(period);

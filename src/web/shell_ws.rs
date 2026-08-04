@@ -1,7 +1,7 @@
 //! WebSocket handler for the PTY-backed web shell. Doubly gated: the
 //! `--enable-shell` flag must be on AND the request must carry a valid session
-//! cookie. Binary PTY output is base64-free — sent as text frames of UTF-8
-//! (lossily decoded) so the xterm-lite frontend can render directly.
+//! cookie. PTY output stays binary so UTF-8 sequences split across read chunks
+//! are not corrupted by lossy per-chunk decoding.
 
 use crate::shell::{ClientMsg, ShellSession};
 use crate::state::store::AppState;
@@ -58,8 +58,7 @@ async fn handle_socket(socket: WebSocket, state: AppState, token: String) {
     // PTY output → WebSocket.
     let out_task = tokio::spawn(async move {
         while let Some(chunk) = pty_out.recv().await {
-            let text = String::from_utf8_lossy(&chunk).to_string();
-            if sender.send(Message::Text(text.into())).await.is_err() {
+            if sender.send(Message::Binary(chunk.into())).await.is_err() {
                 break;
             }
         }
@@ -83,21 +82,19 @@ async fn handle_socket(socket: WebSocket, state: AppState, token: String) {
                 _ => break,
             },
         };
-        match msg {
-            Message::Text(text) => {
-                if let Ok(cmd) = serde_json::from_str::<ClientMsg>(&text) {
-                    match cmd {
-                        ClientMsg::Input { data } => sess_in.lock().write_input(data.as_bytes()),
-                        ClientMsg::Resize { cols, rows } => sess_in.lock().resize(cols, rows),
-                    }
-                } else {
-                    // Treat unrecognized text as raw input.
-                    sess_in.lock().write_input(text.as_bytes());
-                }
-            }
-            Message::Binary(b) => sess_in.lock().write_input(&b),
+        let result = match msg {
+            Message::Text(text) => match serde_json::from_str::<ClientMsg>(&text) {
+                Ok(ClientMsg::Input { data }) => sess_in.lock().write_input(data.as_bytes()),
+                Ok(ClientMsg::Resize { cols, rows }) => sess_in.lock().resize(cols, rows),
+                Err(_) => sess_in.lock().write_input(text.as_bytes()),
+            },
+            Message::Binary(bytes) => sess_in.lock().write_input(&bytes),
             Message::Close(_) => break,
-            _ => {}
+            _ => continue,
+        };
+        if let Err(error) = result {
+            tracing::debug!("shell PTY I/O failed: {}", error);
+            break;
         }
     }
 

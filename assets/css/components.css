@@ -1220,3 +1220,39 @@ select.select:focus {
 }
 .rule-kv .k { color: var(--text-3); }
 .rule-kv .v { color: var(--text-1); font-family: var(--font-mono); }
+
+/* ---------- Fleet view + server list ---------- */
+.fleet-card.is-active {
+  border-color: var(--border-accent);
+  box-shadow: var(--shadow-md);
+}
+.fleet-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: var(--sp-3);
+}
+.fleet-grid .mono {
+  font-size: var(--fs-sm);
+  color: var(--text-0);
+  font-variant-numeric: tabular-nums;
+}
+.server-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 0 var(--sp-3) var(--sp-3);
+}
+.server-item {
+  padding: 7px var(--sp-3);
+  font-size: var(--fs-sm);
+}
+.server-item .status-dot {
+  width: 7px;
+  height: 7px;
+  flex-shrink: 0;
+}
+.server-chip .v {
+  max-width: 160px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}

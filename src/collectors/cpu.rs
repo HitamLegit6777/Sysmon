@@ -17,10 +17,6 @@ struct CpuTimes {
     softirq: u64,
     steal: u64,
     guest: u64,
-    // Parsed for a complete /proc/stat layout; guest_nice is already folded into
-    // `nice` by the kernel, so it is never used in utilization math.
-    #[allow(dead_code)]
-    guest_nice: u64,
 }
 
 impl CpuTimes {
@@ -59,7 +55,6 @@ fn parse_cpu_line(tokens: &[&str]) -> CpuTimes {
         softirq: g(7),
         steal: g(8),
         guest: g(9),
-        guest_nice: g(10),
     }
 }
 
@@ -143,9 +138,7 @@ impl CpuCollector {
             match tokens[0] {
                 "cpu" => agg = parse_cpu_line(&tokens),
                 "ctxt" => ctxt = tokens.get(1).and_then(|s| s.parse().ok()).unwrap_or(0),
-                "processes" => {
-                    processes = tokens.get(1).and_then(|s| s.parse().ok()).unwrap_or(0)
-                }
+                "processes" => processes = tokens.get(1).and_then(|s| s.parse().ok()).unwrap_or(0),
                 "procs_running" => {
                     procs_running = tokens.get(1).and_then(|s| s.parse().ok()).unwrap_or(0)
                 }
@@ -166,13 +159,15 @@ impl CpuCollector {
         cores.sort_by_key(|(idx, _)| *idx);
         let core_count = cores.len().max(self.core_count);
 
-        let mut metrics = CpuMetrics::default();
-        metrics.core_count = core_count;
-        metrics.ctxt = ctxt;
-        metrics.processes = processes;
-        metrics.procs_running = procs_running;
-        metrics.procs_blocked = procs_blocked;
-        metrics.interrupts = interrupts;
+        let mut metrics = CpuMetrics {
+            core_count,
+            ctxt,
+            processes,
+            procs_running,
+            procs_blocked,
+            interrupts,
+            ..Default::default()
+        };
 
         // Aggregate usage relative to the previous aggregate sample.
         if let Some(prev) = self.prev_total {
@@ -196,8 +191,10 @@ impl CpuCollector {
         let mut freq_max: f64 = 0.0;
         let mut freq_n: f64 = 0.0;
         for (idx, cur) in &cores {
-            let mut cu = CoreUsage::default();
-            cu.core = *idx;
+            let mut cu = CoreUsage {
+                core: *idx,
+                ..Default::default()
+            };
             if let Some(prev) = self.prev_cores.get(*idx) {
                 cu.usage = Self::usage_between(prev, cur);
                 let pt = prev.total();
@@ -229,8 +226,7 @@ impl CpuCollector {
         }
 
         // Rates for counters.
-        metrics.ctxt_per_sec =
-            crate::util::format::compute_rate(ctxt, self.prev_ctxt, delta_ms);
+        metrics.ctxt_per_sec = crate::util::format::compute_rate(ctxt, self.prev_ctxt, delta_ms);
         metrics.forks_per_sec =
             crate::util::format::compute_rate(processes, self.prev_processes, delta_ms);
         metrics.interrupts_per_sec =

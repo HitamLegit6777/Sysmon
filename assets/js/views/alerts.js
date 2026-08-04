@@ -220,8 +220,32 @@ export class AlertsView {
             this._openRuleEditor(r);
           },
         }),
+        h("button.btn.btn-danger.sm", {
+          type: "button",
+          html: icon("trash", 14) + " Delete rule",
+          onClick: (event) => {
+            event.stopPropagation();
+            this._deleteRule(r);
+          },
+        }),
       ]),
     ]);
+  }
+
+  async _deleteRule(rule) {
+    if (!confirm(`Delete alert rule "${rule.id}"?`)) return;
+    try {
+      const response = await authedFetch(`/api/alert-rules/${encodeURIComponent(rule.id)}`, {
+        method: "DELETE",
+      });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(payload.error || "Could not delete rule");
+      store.applyAlertRules(payload.rules || [], store.get().alerts?.active || []);
+      this._expanded.delete(rule.id);
+      notify.success("Rule deleted", `${rule.id} is no longer monitored`);
+    } catch (error) {
+      notify.danger("Delete failed", error.message || "Could not delete rule");
+    }
   }
 
   _openRuleEditor(existing = null) {
@@ -368,12 +392,14 @@ export class AlertsView {
             ? "danger"
             : "warning"
           : "success";
+        const serverName = store.serverName(ev.serverId);
         return h("div.row-between", { style: { padding: "6px 0", borderBottom: "1px solid var(--border)" } }, [
           h("div.row.gap-2", { style: { minWidth: 0 } }, [
             h("span.status-dot" + (fired ? ".offline" : ".online")),
             h("div.col", { style: { minWidth: 0 } }, [
               h("span.truncate", { text: `${ev.id}: ${ev.message}` }),
               h("span.text-3.mono", { text: fmtDateTime(ev.timestamp), style: { fontSize: "11px" } }),
+              h("span.text-3", { text: "· " + serverName, style: { fontSize: "11px" } }),
             ]),
           ]),
           badge(ev.transition, kind, false),
@@ -414,6 +440,24 @@ const METRIC_OPTIONS = [
   ["network.totalTxBytesPerSec", "Network transmit (bytes/s)"],
 ];
 
+function resolveMetric(path, snap) {
+  const map = {
+    "cpu.usage": snap.cpu.usage,
+    "cpu.iowait": snap.cpu.iowait,
+    "cpu.system": snap.cpu.system,
+    "memory.usedPercent": snap.memory.usedPercent,
+    "memory.swapUsedPercent": snap.memory.swapUsedPercent,
+    "load.load1": snap.load.load1,
+    "load.load1PerCore": snap.load.load1PerCore,
+    "load.load5PerCore": snap.load.load5PerCore,
+    "disk.maxUsedPercent": snap.disk.maxUsedPercent,
+    "thermal.maxTemp": snap.thermal.maxTemp,
+    "network.totalRxBytesPerSec": snap.network.totalRxBytesPerSec,
+    "network.totalTxBytesPerSec": snap.network.totalTxBytesPerSec,
+  };
+  const value = map[path];
+  return value == null ? null : Math.round(value * 10) / 10;
+}
 const OPERATOR_OPTIONS = [
   [">", "Greater than (>)"],
   [">=", "Greater than or equal (>=)"],
@@ -423,20 +467,5 @@ const OPERATOR_OPTIONS = [
   ["!=", "Not equal (!=)"],
 ];
 
-function resolveMetric(path, snap) {
-  const map = {
-    "cpu.usage": snap.cpu.usage,
-    "cpu.iowait": snap.cpu.iowait,
-    "memory.usedPercent": snap.memory.usedPercent,
-    "memory.swapUsedPercent": snap.memory.swapUsedPercent,
-    "load.load1": snap.load.load1,
-    "load.load1PerCore": snap.load.load1PerCore,
-    "load.load5PerCore": snap.load.load5PerCore,
-    "disk.maxUsedPercent": snap.disk.maxUsedPercent,
-    "thermal.maxTemp": snap.thermal.maxTemp,
-  };
-  const v = map[path];
-  return v == null ? null : Math.round(v * 10) / 10;
-}
 
 export default AlertsView;

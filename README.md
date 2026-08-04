@@ -38,7 +38,7 @@ The entire frontend is compiled into a single self-contained binary (~2.8 MB). N
 
 ### Alerting
 
-A threshold engine evaluates rules on an interval with **duration debounce** (a rule must stay tripped for its configured window before firing), so transient spikes don't spam you. Default rules:
+Threshold rules can be added, edited, or deleted from the dashboard. Changes apply immediately and persist across restarts. The engine evaluates rules on the live sampling cadence with **duration debounce** (a rule must stay tripped for its configured window before firing), so transient spikes don't spam you. Default rules:
 
 | Metric | Threshold | Sustained for | Severity |
 | --- | --- | --- | --- |
@@ -49,31 +49,59 @@ A threshold engine evaluates rules on an interval with **duration debounce** (a 
 | `load.load1PerCore` | > 2.0 | 30 s | warning |
 | `thermal.maxTemp` | > 85 °C | 10 s | warning |
 
-## Quick start
+## Quick start — one server first, then the fleet
 
-**Requirements:** Linux, Rust 1.80+ (build only). No runtime dependencies.
+**Requirements:** Linux, Rust 1.80+ (build only). Agents need no Rust — just
+the binary. No runtime dependencies.
 
 ```bash
-# Build a release binary (deps are vendored in the cargo cache; --offline works)
+# Build both binaries (deps are vendored in the cargo cache; --offline works)
 CARGO_NET_OFFLINE=true cargo build --release --offline
 
-# Run — binds 0.0.0.0 by default so it's reachable across your LAN
-./target/release/sysmon --port 8099
+# 1) Run the hub on your central server
+SYSMON_AGENT_TOKEN=<long-secret> ./target/release/sysmon --port 8099 --quicktunnel
+
+# 2) On every server you want to monitor, run an agent
+./target/release/agent-monitor --hub wss://<hub-quicktunnel-url>/agent/ws \
+    --token <same-long-secret> --id webserver-01
 ```
 
-Open `http://localhost:8099` locally, or `http://<server-ip>:8099` from another device.
+The hub auto-starts a free Cloudflare quick tunnel (`cloudflared`) when it
+cannot otherwise be reached, prints its URL (also saved to
+`/tmp/sysmon-tunnel-url`), and pushes the URL to every connected agent — so a
+rotated tunnel URL never strands an agent. Agents dial OUT, so they need no
+inbound ports and can live behind NAT. The **Fleet** view in the dashboard
+shows every server at a glance; click a server card (or use the Servers list
+in the sidebar) to drill into its live metrics. Disable the tunnel with
+`--no-quicktunnel` for LAN-only deployments.
 
-### Command-line flags
+### Command-line flags — hub (`sysmon`)
 
 ```
 sysmon [OPTIONS]
 
-  -p, --port <PORT>     Port to listen on          (default 8088)
-      --host <HOST>     Host/interface to bind      (default 0.0.0.0)
-  -c, --config <FILE>   Path to a JSON config file
-  -v, --version         Print version and exit
-  -h, --help            Print help and exit
+  -p, --port <PORT>       Port to listen on          (default 8088)
+      --host <HOST>       Host/interface to bind      (default 0.0.0.0)
+  -c, --config <FILE>     Path to a JSON config file
+        --enable-shell    Enable the web terminal (auth-gated; as this user)
+        --no-quicktunnel  Disable the automatic Cloudflare quick tunnel
+  -v, --version           Print version and exit
+  -h, --help              Print help and exit
 ```
+
+### Command-line flags — agent (`agent-monitor`)
+
+```
+agent-monitor --hub <URL> --token <SECRET> [OPTIONS]
+
+        --hub <URL>       Hub WS endpoint, e.g. wss://xxx.trycloudflare.com/agent/ws
+        --token <SECRET>  Shared Bearer token (must match the hub's SYSMON_AGENT_TOKEN)
+        --id <NAME>       Agent id (default: this host's hostname)
+        --interval-ms <N> Fast sampling interval in ms (default 1000)
+  -h, --help              Print help and exit
+```
+Environment: `SYSMON_AGENT_HUB`, `SYSMON_AGENT_TOKEN`, `SYSMON_AGENT_ID`.
+
 
 ### Environment overrides
 
@@ -83,6 +111,8 @@ sysmon [OPTIONS]
 | `SYSMON_HOST` | Bind host/interface |
 | `SYSMON_FAST_INTERVAL_MS` | Fast sampling interval (metrics push cadence) |
 | `SYSMON_THEME` | Default UI theme (`dark` / `light`) |
+| `SYSMON_AGENT_TOKEN` | Shared agent Bearer token (enables the agent listener) |
+
 
 CLI flags take precedence over environment variables, which take precedence over the config file, which falls back to sane built-in defaults.
 
@@ -109,11 +139,14 @@ All metric data is available as plain JSON, so SysMon doubles as a lightweight m
 | `GET /api/history` | Rolling history series |
 | `GET /api/processes` | Current process table |
 | `GET /api/alerts` | Active alerts + event history |
+| `POST /api/alert-rules` | Create and persist an alert rule |
+| `PUT /api/alert-rules/:id` | Replace an alert rule |
+| `DELETE /api/alert-rules/:id` | Delete an alert rule |
 | `GET /api/config` | Effective config incl. alert rules |
 | `GET /api/health` | Liveness + diagnostics (uptime, sample count, WS clients) |
 | `GET /ws` | WebSocket stream: a bootstrap payload on connect, then live updates |
 
-The WebSocket also accepts small JSON commands from the client: `{"cmd":"ping"}`, `{"cmd":"history","points":600}`, `{"cmd":"processes"}`, and `{"cmd":"snapshot"}`.
+The WebSocket also accepts small JSON commands from the client: `{"cmd":"ping"}`, `{"cmd":"history","points":600}`, `{"cmd":"processes"}`, and `{"cmd":"snapshot"}`. The top-bar pause control closes the stream; resume reconnects and reseeds current state/history.
 
 ## Architecture
 
@@ -165,17 +198,17 @@ The harness launches headless Chrome in its own process group and reaps it relia
 node docs/cdp_validate.mjs
 ```
 
-Rust unit tests (formatters, ring buffer, the alert engine's debounce logic) run with:
+Rust unit tests (formatters, ring buffer, authentication/session behavior, persisted alert-rule CRUD, and alert debounce logic) run with:
 
 ```bash
-cargo test
+cargo test --all-targets
 ```
 
 ## Project stats
 
 - **~15.5k LOC** — Rust ~4.0k, JavaScript ~8.3k, CSS ~3.1k
 - **~2.8 MB** self-contained release binary
-- **18** Rust unit tests, plus the full CDP UI matrix
+- **32** Rust unit tests, plus the full CDP UI matrix
 - **Zero runtime dependencies**
 
 ## License

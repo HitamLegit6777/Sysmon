@@ -26,7 +26,6 @@ impl Default for ServerConfig {
 #[serde(rename_all = "camelCase", default)]
 pub struct SamplingConfig {
     pub fast_interval_ms: u64,
-    pub slow_interval_ms: u64,
     pub process_interval_ms: u64,
     pub disk_interval_ms: u64,
     pub thermal_interval_ms: u64,
@@ -38,7 +37,6 @@ impl Default for SamplingConfig {
     fn default() -> Self {
         SamplingConfig {
             fast_interval_ms: 1000,
-            slow_interval_ms: 5000,
             process_interval_ms: 3000,
             disk_interval_ms: 5000,
             thermal_interval_ms: 4000,
@@ -52,14 +50,12 @@ impl Default for SamplingConfig {
 #[serde(rename_all = "camelCase", default)]
 pub struct HistoryConfig {
     pub capacity_fast: usize,
-    pub capacity_slow: usize,
 }
 
 impl Default for HistoryConfig {
     fn default() -> Self {
         HistoryConfig {
             capacity_fast: 3600,
-            capacity_slow: 2880,
         }
     }
 }
@@ -94,7 +90,6 @@ impl Default for AlertRuleConfig {
 #[serde(rename_all = "camelCase", default)]
 pub struct AlertsConfig {
     pub enabled: bool,
-    pub evaluation_interval_ms: u64,
     pub rules: Vec<AlertRuleConfig>,
 }
 
@@ -102,8 +97,29 @@ impl Default for AlertsConfig {
     fn default() -> Self {
         AlertsConfig {
             enabled: true,
-            evaluation_interval_ms: 2000,
             rules: default_rules(),
+        }
+    }
+}
+
+/// Agent (remote monitored server) settings. When `enabled` is false the hub
+/// behaves exactly like a standalone single-host monitor. `token` is the
+/// shared Bearer credential every `agent-monitor` must present; leave it empty
+/// to keep agents disabled regardless of the flag.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct AgentsConfig {
+    pub enabled: bool,
+    pub token: String,
+    pub max_agents: usize,
+}
+
+impl Default for AgentsConfig {
+    fn default() -> Self {
+        AgentsConfig {
+            enabled: false,
+            token: String::new(),
+            max_agents: 64,
         }
     }
 }
@@ -185,7 +201,7 @@ impl Default for UiConfig {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase", default)]
 pub struct Config {
     pub server: ServerConfig,
@@ -193,19 +209,9 @@ pub struct Config {
     pub history: HistoryConfig,
     pub alerts: AlertsConfig,
     pub ui: UiConfig,
+    pub agents: AgentsConfig,
 }
 
-impl Default for Config {
-    fn default() -> Self {
-        Config {
-            server: ServerConfig::default(),
-            sampling: SamplingConfig::default(),
-            history: HistoryConfig::default(),
-            alerts: AlertsConfig::default(),
-            ui: UiConfig::default(),
-        }
-    }
-}
 
 impl Config {
     /// Load configuration from an optional JSON file path, then overlay
@@ -247,6 +253,13 @@ impl Config {
         }
         if let Ok(v) = std::env::var("SYSMON_THEME") {
             self.ui.default_theme = v;
+        }
+        if let Ok(v) = std::env::var("SYSMON_AGENT_TOKEN") {
+            if !v.is_empty() {
+                self.agents.token = v;
+                // Setting a token implies agents are wanted.
+                self.agents.enabled = true;
+            }
         }
     }
 }

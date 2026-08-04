@@ -326,3 +326,24 @@ pub struct HistoryPoint {
     pub temp: f32,
     pub procs_running: u32,
 }
+
+impl HistoryPoint {
+    /// Build a compact history point from a full snapshot. Shared by the
+    /// self-monitoring path (store.rs) and the per-agent ingest path so both
+    /// produce byte-identical chart series.
+    pub fn from_snapshot(snap: &MetricsSnapshot) -> Self {
+        HistoryPoint {
+            t: snap.timestamp,
+            cpu: snap.cpu.usage as f32,
+            mem: snap.memory.used_percent as f32,
+            swap: snap.memory.swap_used_percent as f32,
+            load1: snap.load.load1 as f32,
+            net_rx: snap.network.total_rx_bytes_per_sec as f32,
+            net_tx: snap.network.total_tx_bytes_per_sec as f32,
+            disk_r: snap.disk.total_read_bytes_per_sec as f32,
+            disk_w: snap.disk.total_write_bytes_per_sec as f32,
+            temp: snap.thermal.max_temp as f32,
+            procs_running: snap.cpu.procs_running as u32,
+        }
+    }
+}

@@ -35,22 +35,43 @@ const VALID_SEVERITIES: &[&str] = &["warning", "critical"];
 pub type SnapshotSender = tokio::sync::broadcast::Sender<Arc<StreamMessage>>;
 
 /// Messages pushed onto the broadcast channel consumed by WebSocket clients.
+/// Per-server variants (snapshot/processes/alert/history) carry the
+/// originating `server_id` ("self" for the hub host, an agent id otherwise)
+/// so one global channel can serve the whole fleet.
 #[derive(Debug, Clone, serde::Serialize)]
 #[serde(tag = "type", rename_all = "camelCase")]
 pub enum StreamMessage {
     /// A fresh fast-channel metrics snapshot.
-    Snapshot { data: Box<MetricsSnapshot> },
+    Snapshot {
+        #[serde(rename = "serverId")]
+        server_id: String,
+        data: Box<MetricsSnapshot>,
+    },
     /// A process table update (slower cadence).
-    Processes { data: Box<ProcessMetrics> },
+    Processes {
+        #[serde(rename = "serverId")]
+        server_id: String,
+        data: Box<ProcessMetrics>,
+    },
     /// An alert transition (fired/cleared).
-    Alert { data: AlertEvent },
+    Alert {
+        #[serde(rename = "serverId")]
+        server_id: String,
+        data: AlertEvent,
+    },
     /// Alert rules changed through the API; update all connected dashboards.
     AlertRules {
         data: Vec<AlertRuleConfig>,
         active: Vec<ActiveAlert>,
     },
     /// A compact history point appended to the rolling chart series.
-    History { data: HistoryPoint },
+    History {
+        #[serde(rename = "serverId")]
+        server_id: String,
+        data: HistoryPoint,
+    },
+    /// Fleet heartbeat: compact summaries of every connected agent.
+    Fleet { data: Vec<crate::agents::AgentSummary> },
 }
 
 /// The shared, cloneable handle to application state.
@@ -73,6 +94,7 @@ struct Inner {
     alert_rules_update: Mutex<()>,
     alert_rules_path: Option<std::path::PathBuf>,
     stream_tx: SnapshotSender,
+    agents: crate::agents::AgentRegistry,
     // Lightweight counters for the diagnostics endpoint.
     sample_count: AtomicU64,
     ws_client_count: AtomicU64,
@@ -111,6 +133,7 @@ impl AppState {
         let engine = AlertEngine::new(&initial_rules);
         let auth_path = auth_path.unwrap_or_else(|| std::path::PathBuf::from("sysmon-auth.json"));
         let auth = crate::auth::Auth::load(auth_path);
+        let max_agents = config.agents.max_agents;
         AppState {
             inner: Arc::new(Inner {
                 config,
@@ -125,6 +148,7 @@ impl AppState {
                 alert_rules: RwLock::new(initial_rules),
                 alert_rules_update: Mutex::new(()),
                 alert_rules_path,
+                agents: crate::agents::AgentRegistry::new(max_agents),
                 stream_tx,
                 sample_count: AtomicU64::new(0),
                 ws_client_count: AtomicU64::new(0),
@@ -169,19 +193,7 @@ impl AppState {
         let now = snapshot.timestamp;
 
         // Build the compact history point before moving the snapshot.
-        let point = HistoryPoint {
-            t: now,
-            cpu: snapshot.cpu.usage as f32,
-            mem: snapshot.memory.used_percent as f32,
-            swap: snapshot.memory.swap_used_percent as f32,
-            load1: snapshot.load.load1 as f32,
-            net_rx: snapshot.network.total_rx_bytes_per_sec as f32,
-            net_tx: snapshot.network.total_tx_bytes_per_sec as f32,
-            disk_r: snapshot.disk.total_read_bytes_per_sec as f32,
-            disk_w: snapshot.disk.total_write_bytes_per_sec as f32,
-            temp: snapshot.thermal.max_temp as f32,
-            procs_running: snapshot.cpu.procs_running as u32,
-        };
+        let point = HistoryPoint::from_snapshot(&snapshot);
 
         // Evaluate alerts against the new snapshot.
         let events = if self.inner.config.alerts.enabled {
@@ -203,11 +215,18 @@ impl AppState {
 
         // Broadcast snapshot, history, and any alert transitions.
         self.broadcast(StreamMessage::Snapshot {
+            server_id: "self".to_string(),
             data: Box::new(snapshot),
         });
-        self.broadcast(StreamMessage::History { data: point });
+        self.broadcast(StreamMessage::History {
+            server_id: "self".to_string(),
+            data: point,
+        });
         for ev in events {
-            self.broadcast(StreamMessage::Alert { data: ev });
+            self.broadcast(StreamMessage::Alert {
+                server_id: "self".to_string(),
+                data: ev,
+            });
         }
     }
 
@@ -218,22 +237,23 @@ impl AppState {
             *p = processes.clone();
         }
         self.broadcast(StreamMessage::Processes {
+            server_id: "self".to_string(),
             data: Box::new(processes),
         });
     }
 
-    /// Merge freshly collected thermal metrics into the latest snapshot.
-    pub fn update_thermal(&self, thermal: ThermalMetrics) {
-        let mut snap = self.inner.snapshot.write();
-        snap.thermal = thermal;
+    pub fn host(&self) -> HostInfo {
+        self.inner.host.read().clone()
     }
 
     pub fn set_host(&self, host: HostInfo) {
         *self.inner.host.write() = host;
     }
 
-    pub fn host(&self) -> HostInfo {
-        self.inner.host.read().clone()
+    /// Merge freshly collected thermal metrics into the latest snapshot.
+    pub fn update_thermal(&self, thermal: ThermalMetrics) {
+        let mut snap = self.inner.snapshot.write();
+        snap.thermal = thermal;
     }
 
     pub fn snapshot(&self) -> MetricsSnapshot {
@@ -247,11 +267,6 @@ impl AppState {
     /// Return a downsampled history series for the chart, at most `max_points`.
     pub fn history(&self, max_points: usize) -> Vec<HistoryPoint> {
         self.inner.history_fast.read().downsample(max_points)
-    }
-
-    /// Return the last `n` raw history points.
-    pub fn history_last_n(&self, n: usize) -> Vec<HistoryPoint> {
-        self.inner.history_fast.read().last_n(n)
     }
 
     pub fn active_alerts(&self) -> Vec<ActiveAlert> {
@@ -340,6 +355,16 @@ impl AppState {
         rules[index] = rule;
         self.commit_alert_rules(rules)
     }
+    pub fn remove_alert_rule(&self, id: &str) -> Result<Vec<AlertRuleConfig>, String> {
+        let _update = self.inner.alert_rules_update.lock();
+        let mut rules = self.alert_rules();
+        let original_len = rules.len();
+        rules.retain(|rule| rule.id != id);
+        if rules.len() == original_len {
+            return Err("Rule not found".into());
+        }
+        self.commit_alert_rules(rules)
+    }
 
     fn normalize_rule(rule: &mut AlertRuleConfig) {
         rule.id = rule.id.trim().to_string();
@@ -381,6 +406,8 @@ impl AppState {
         }
         *self.inner.alert_rules.write() = rules.clone();
         self.inner.alert_engine.write().replace_rules(&rules);
+        // Propagate the same rule set to every registered agent engine.
+        self.inner.agents.replace_rules(&rules);
         let active = self.inner.alert_engine.read().active();
         self.broadcast(StreamMessage::AlertRules {
             data: rules.clone(),
@@ -412,6 +439,21 @@ impl AppState {
 
     pub fn ws_messages_sent(&self) -> u64 {
         self.inner.ws_messages_sent.load(Ordering::Relaxed)
+    }
+
+    /// Access to the remote-agent registry (fleet state).
+    pub fn agents(&self) -> &crate::agents::AgentRegistry {
+        &self.inner.agents
+    }
+
+    /// Whether agent ingestion is enabled (token configured + enabled).
+    pub fn agents_enabled(&self) -> bool {
+        self.inner.config.agents.enabled && !self.inner.config.agents.token.is_empty()
+    }
+
+    /// The configured agent Bearer token (never exposed over the API).
+    pub fn agents_token(&self) -> &str {
+        &self.inner.config.agents.token
     }
 }
 
@@ -467,10 +509,18 @@ mod alert_rule_tests {
             .alert_rules()
             .iter()
             .any(|r| r.id == "custom-cpu-renamed" && r.threshold == 75.0));
-
         let persisted: Vec<AlertRuleConfig> =
             serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
         assert!(persisted.iter().any(|r| r.id == "custom-cpu-renamed"));
+
+        state.remove_alert_rule("custom-cpu-renamed").unwrap();
+        assert!(!state
+            .alert_rules()
+            .iter()
+            .any(|r| r.id == "custom-cpu-renamed"));
+        let persisted: Vec<AlertRuleConfig> =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert!(!persisted.iter().any(|r| r.id == "custom-cpu-renamed"));
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
@@ -493,7 +543,7 @@ mod alert_rule_tests {
         assert!(!state.shell_enabled());
         state
             .auth()
-            .change_password("admin123", "a-secure-password")
+            .change_password("admin123", "a-secure-password", None)
             .unwrap();
         assert!(state.shell_enabled());
         let _ = std::fs::remove_file(auth_path);

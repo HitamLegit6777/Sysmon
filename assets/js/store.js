@@ -8,7 +8,6 @@
  * fast chart rendering.
  */
 
-import { clamp } from "./util.js";
 
 /** Maximum number of history points retained client-side per series. */
 const MAX_HISTORY = 900;
@@ -38,6 +37,13 @@ class Store {
       config: null,
       serverTimeOffset: 0,
       lastUpdate: 0,
+      // Fleet: compact summaries of every connected agent (from the hub's
+      // 1s fleet tick). The sidebar + fleet view render from this.
+      fleet: [],
+      // Which server the per-server state (host/snapshot/processes/alerts/
+      // history below) currently refers to: "self" or an agent id.
+      activeServer: "self",
+      activeServerName: "this host",
       // Rolling history: { t: [...], cpu: [...], mem: [...], ... }
       history: { t: [] },
       // Per-core rolling history for the CPU heatmap: coreHistory[coreIndex] = [...]
@@ -92,21 +98,26 @@ class Store {
     return this.state;
   }
 
-  /* --------------------------- Mutations ------------------------------ */
-
   setConnection(connected, connecting) {
     this.state.connected = connected;
     this.state.connecting = connecting;
     this.emit("connection", { connected, connecting });
   }
 
-  /** Apply a bootstrap payload received on WebSocket connect. */
+  /* --------------------------- Mutations ------------------------------ */
+
+  /** Apply a bootstrap payload received on WebSocket connect or on select. */
   applyBootstrap(msg) {
+    if (msg.serverId) {
+      this.state.activeServer = msg.serverId;
+      this.state.activeServerName = msg.serverName || msg.serverId;
+    }
     this.state.host = msg.host || null;
     this.state.snapshot = msg.snapshot || null;
     this.state.processes = msg.processes || null;
     this.state.alerts = msg.alerts || { active: [], history: [] };
     this.state.config = msg.config || null;
+    if (Array.isArray(msg.servers)) this.state.fleet = msg.servers;
     if (msg.serverTime) {
       this.state.serverTimeOffset = msg.serverTime - Date.now();
     }
@@ -124,6 +135,22 @@ class Store {
     this.emit("processes", this.state.processes);
     this.emit("alerts", this.state.alerts);
     this.emit("history", this.state.history);
+    this.emit("servers", this.state.fleet);
+  }
+
+  /** Apply the 1s fleet heartbeat (compact per-agent summaries). */
+  applyFleet(list) {
+    if (!Array.isArray(list)) return;
+    this.state.fleet = list;
+    this.emit("fleet", list);
+    this.emit("servers", list);
+  }
+
+  /** Name of the currently selected server (for labels/toasts). */
+  serverName(id) {
+    if (!id || id === "self") return this.state.activeServerName;
+    const s = this.state.fleet.find((f) => f.id === id);
+    return s ? s.name || s.hostname || id : id;
   }
 
   resetHistory() {

@@ -63,9 +63,7 @@ impl HostCollector {
                     "model name" if model.is_empty() => model = val.to_string(),
                     "vendor_id" if vendor.is_empty() => vendor = val.to_string(),
                     "cpu MHz" if mhz == 0.0 => mhz = val.parse().unwrap_or(0.0),
-                    "cache size" if cache_kb == 0 => {
-                        cache_kb = procfs::parse_leading_u64(val)
-                    }
+                    "cache size" if cache_kb == 0 => cache_kb = procfs::parse_leading_u64(val),
                     "physical id" => {
                         physical_ids.insert(val.to_string());
                     }
@@ -140,8 +138,7 @@ impl HostCollector {
     pub fn collect(&mut self) -> HostInfo {
         let (kernel, kernel_version) = Self::read_kernel();
         let (os_name, os_version, os_pretty) = Self::read_os_release();
-        let (cpu_model, cpu_vendor, cpu_mhz_base, cpu_cache_kb, physical) =
-            Self::read_cpu_info();
+        let (cpu_model, cpu_vendor, cpu_mhz_base, cpu_cache_kb, physical) = Self::read_cpu_info();
         let (virtualization, container) = Self::detect_virtualization();
 
         let total_memory = {

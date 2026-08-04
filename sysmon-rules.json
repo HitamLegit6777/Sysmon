@@ -1,0 +1,56 @@
+[
+  {
+    "id": "cpu-high",
+    "metric": "cpu.usage",
+    "operator": ">",
+    "threshold": 90.0,
+    "durationMs": 15000,
+    "severity": "warning",
+    "message": "CPU usage above 90%"
+  },
+  {
+    "id": "mem-high",
+    "metric": "memory.usedPercent",
+    "operator": ">",
+    "threshold": 90.0,
+    "durationMs": 20000,
+    "severity": "warning",
+    "message": "Memory usage above 90%"
+  },
+  {
+    "id": "disk-full",
+    "metric": "disk.maxUsedPercent",
+    "operator": ">",
+    "threshold": 92.0,
+    "durationMs": 5000,
+    "severity": "critical",
+    "message": "A filesystem is nearly full"
+  },
+  {
+    "id": "load-high",
+    "metric": "load.load1PerCore",
+    "operator": ">",
+    "threshold": 2.0,
+    "durationMs": 30000,
+    "severity": "warning",
+    "message": "Load average high relative to core count"
+  },
+  {
+    "id": "temp-high",
+    "metric": "thermal.maxTemp",
+    "operator": ">",
+    "threshold": 85.0,
+    "durationMs": 10000,
+    "severity": "warning",
+    "message": "Temperature is high"
+  },
+  {
+    "id": "swap-high",
+    "metric": "memory.swapUsedPercent",
+    "operator": ">",
+    "threshold": 80.0,
+    "durationMs": 30000,
+    "severity": "warning",
+    "message": "Swap usage is high"
+  }
+]

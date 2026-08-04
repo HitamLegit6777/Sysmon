@@ -85,6 +85,16 @@ class WSClient {
     }
     this.store.state.stats.wsMessages++;
 
+    // Per-server frames only apply when they belong to the selected server.
+    // (Fleet summaries and bootstrap/alertRules are global.)
+    if (
+      msg.serverId &&
+      msg.serverId !== this.store.state.activeServer &&
+      msg.type !== "bootstrap"
+    ) {
+      return;
+    }
+
     switch (msg.type) {
       case "bootstrap":
         this.store.applyBootstrap(msg);
@@ -99,10 +109,14 @@ class WSClient {
         this.store.applyProcesses(msg.data);
         break;
       case "alert":
+        if (msg.serverId && msg.data) msg.data.serverId = msg.serverId;
         this.store.applyAlertEvent(msg.data);
         break;
       case "alertRules":
         this.store.applyAlertRules(msg.data, msg.active);
+        break;
+      case "fleet":
+        this.store.applyFleet(msg.data);
         break;
       case "pong":
         this.pongDeadline = 0;
@@ -127,6 +141,14 @@ class WSClient {
       default:
         break;
     }
+  }
+
+  /** Switch the live stream to another server ("self" or an agent id). */
+  selectServer(serverId) {
+    if (serverId === this.store.state.activeServer) return;
+    this.send({ cmd: "select", server: serverId });
+    // Optimistically mark it active; the hub's bootstrap reply confirms.
+    this.store.state.activeServer = serverId;
   }
 
   /** Send a JSON command to the server. */
