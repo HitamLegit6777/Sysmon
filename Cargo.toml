@@ -21,6 +21,7 @@ path = "src/bin/agent_monitor.rs"
 
 [dependencies]
 tokio-tungstenite = { version = "0.29", features = ["connect", "rustls-tls-webpki-roots"] }
+sha2 = "0.10"
 
 tokio = { version = "1.53", features = ["rt-multi-thread", "macros", "net", "time", "signal", "sync", "fs", "io-util", "process"] }
 axum = { version = "0.8", features = ["ws", "json", "query"] }

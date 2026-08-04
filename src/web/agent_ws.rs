@@ -50,13 +50,14 @@ struct Pong {
     data: Option<u64>,
 }
 
-/// Static-time comparison helper so token validation cannot leak timing.
+/// Constant-time comparison that also hides the token length: both sides are
+/// hashed with SHA-256 first, so the comparison always runs over fixed-size
+/// digests regardless of the real token length.
 fn constant_time_eq(a: &str, b: &str) -> bool {
-    let a = a.as_bytes();
-    let b = b.as_bytes();
-    if a.len() != b.len() {
-        return false;
-    }
+    use sha2::{Digest, Sha256};
+    let da = Sha256::digest(a.as_bytes());
+    let db = Sha256::digest(b.as_bytes());
+    let (a, b) = (da.as_slice(), db.as_slice());
     let mut diff = 0u8;
     for (x, y) in a.iter().zip(b.iter()) {
         diff |= x ^ y;
@@ -69,6 +70,19 @@ fn bearer_token(req: &Request) -> Option<String> {
     let header = req.headers().get("authorization")?.to_str().ok()?;
     header.strip_prefix("Bearer ").map(|t| t.trim().to_string())
 }
+/// Authorization logic split from the WebSocket extractor so it can be
+/// security-tested without an HTTP upgrade transport.
+fn authorize_agent_request(state: &AppState, req: &Request) -> Result<(), StatusCode> {
+    if !state.agents_enabled() {
+        return Err(StatusCode::FORBIDDEN);
+    }
+    let token = bearer_token(req).ok_or(StatusCode::UNAUTHORIZED)?;
+    if !constant_time_eq(&token, state.agents_token()) {
+        return Err(StatusCode::UNAUTHORIZED);
+    }
+    Ok(())
+}
+
 
 /// GET /agent/ws — upgrade, authenticate, and stream agent telemetry.
 pub async fn handler(
@@ -76,15 +90,11 @@ pub async fn handler(
     ws: WebSocketUpgrade,
     req: Request,
 ) -> Response {
-    if !state.agents_enabled() {
-        return (StatusCode::FORBIDDEN, "agents disabled").into_response();
-    }
-    let Some(token) = bearer_token(&req) else {
-        return (StatusCode::UNAUTHORIZED, "missing bearer token").into_response();
-    };
-    if !constant_time_eq(&token, state.agents_token()) {
-        tracing::warn!("agent connection rejected: bad token");
-        return (StatusCode::UNAUTHORIZED, "invalid token").into_response();
+    if let Err(status) = authorize_agent_request(&state, &req) {
+        if status == StatusCode::UNAUTHORIZED {
+            tracing::warn!("agent connection rejected: authentication failed");
+        }
+        return (status, "agent connection rejected").into_response();
     }
     ws.max_message_size(512 * 1024)
         .max_frame_size(512 * 1024)
@@ -116,12 +126,13 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
         Ok(Ok((id, name))) => {
             let name = if name.trim().is_empty() { id.clone() } else { name };
             let rules = state.alert_rules();
-            if let Err(e) = state.agents().register(
+            if let Err(_e) = state.agents().register(
                 crate::agents::AgentIdentity { id: id.clone(), name },
                 &rules,
             ) {
+                // Generic message: do not leak why registration failed.
                 let _ = sender
-                    .send(Message::Text(format!("{{\"type\":\"error\",\"error\":\"{e}\"}}").into()))
+                    .send(Message::Text("{\"type\":\"error\",\"error\":\"registration rejected\"}".into()))
                     .await;
                 let _ = sender.close().await;
                 return;
@@ -133,6 +144,7 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
             return;
         }
     };
+
 
     // --- Shared send half: both the outbound/probe task and the ingest loop
     // write to the socket, so guard the sink with a mutex. Sends are short;
@@ -191,8 +203,14 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
             }
         }
     });
-
-    // (single probe_task is spawned above; duplicates were purged)
+    // --- Per-connection ingest budget. Legit traffic is roughly one
+    // snapshot/s plus one process table every three seconds. These ceilings
+    // leave ample headroom while bounding an authenticated flood.
+    let mut rate_window_start = crate::state::now_millis();
+    let mut rate_count: u32 = 0;
+    let mut rate_bytes: usize = 0;
+    const RATE_LIMIT_PER_SEC: u32 = 10;
+    const BYTE_LIMIT_PER_SEC: usize = 1024 * 1024;
 
     // --- Main ingest loop.
     loop {
@@ -221,9 +239,22 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
             _ => continue,
         };
 
+        // Sliding-window ingest budget.
+        if now.saturating_sub(rate_window_start) >= 1000 {
+            rate_window_start = now;
+            rate_count = 0;
+            rate_bytes = 0;
+        }
+        rate_count += 1;
+        rate_bytes = rate_bytes.saturating_add(text.len());
+        if rate_count > RATE_LIMIT_PER_SEC || rate_bytes > BYTE_LIMIT_PER_SEC {
+            tracing::warn!("agent '{id}' exceeding ingest budget; dropping frame");
+            continue;
+        }
+
         // Parse a typed frame. Malformed frames are logged and skipped; a
         // flood of malformed frames is bounded by the socket size limit and
-        // the 45s watchdog.
+        // the rate limiter above.
         let value: serde_json::Value = match serde_json::from_str(&text) {
             Ok(v) => v,
             Err(e) => {
@@ -234,7 +265,6 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
         let Some(kind) = value.get("type").and_then(|v| v.as_str()) else {
             continue;
         };
-
 
         match kind {
             "snapshot" => {
@@ -311,3 +341,91 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
 
 // `split` needs StreamExt/SinkExt; import them so the module compiles.
 use futures::{SinkExt, StreamExt};
+
+#[cfg(test)]
+mod security_tests {
+    use super::*;
+    use axum::body::Body;
+
+    #[test]
+    fn constant_time_compare_is_correct_for_all_lengths() {
+        assert!(constant_time_eq("secret", "secret"));
+        assert!(!constant_time_eq("secret", "secreu"));
+        assert!(!constant_time_eq("secret", "secret-longer"));
+        assert!(!constant_time_eq("", "secret"));
+        assert!(constant_time_eq("", ""));
+    }
+
+    #[test]
+    fn token_length_does_not_leak_via_early_return() {
+        // Both branches hash first, so a short wrong token and a long wrong
+        // token take the same path; the comparator never sees raw lengths.
+        let state = state_with_token(Some("the-actual-32-byte-secret-token-abc"));
+        for probe in ["a", "x".repeat(64).as_str(), "the-actual-32-byte-secret-token-abd"] {
+            assert!(
+                authorize_agent_request(&state, &auth_request(Some(probe))).is_err(),
+                "probe {probe:?} must not authenticate"
+            );
+        }
+        assert!(authorize_agent_request(&state, &auth_request(Some("the-actual-32-byte-secret-token-abc"))).is_ok());
+    }
+
+    fn state_with_token(token: Option<&str>) -> AppState {
+        let mut config = crate::state::config::Config::default();
+        if let Some(token) = token {
+            config.agents.enabled = true;
+            config.agents.token = token.into();
+        }
+        let path = std::env::temp_dir().join(format!(
+            "sysmon-agent-auth-test-{}-{}.json",
+            std::process::id(),
+            crate::state::now_millis()
+        ));
+        AppState::with_options(config, false, Some(path), None)
+    }
+
+    fn auth_request(token: Option<&str>) -> Request {
+        let mut builder = Request::builder().uri("/agent/ws");
+        if let Some(token) = token {
+            builder = builder.header("authorization", format!("Bearer {token}"));
+        }
+        builder.body(axum::body::Body::empty()).unwrap()
+    }
+
+    #[test]
+    fn authorization_rejects_missing_invalid_and_disabled() {
+        let state = state_with_token(Some("correct-secret"));
+        assert_eq!(
+            authorize_agent_request(&state, &auth_request(None)),
+            Err(StatusCode::UNAUTHORIZED)
+        );
+        assert_eq!(
+            authorize_agent_request(&state, &auth_request(Some("wrong-secret"))),
+            Err(StatusCode::UNAUTHORIZED)
+        );
+        assert!(authorize_agent_request(&state, &auth_request(Some("correct-secret"))).is_ok());
+
+        let disabled = state_with_token(None);
+        assert_eq!(
+            authorize_agent_request(&disabled, &auth_request(Some("anything"))),
+            Err(StatusCode::FORBIDDEN)
+        );
+    }
+
+    #[test]
+    fn bearer_parser_rejects_malformed_schemes() {
+        let req = Request::builder()
+            .header("authorization", "Bearer abc")
+            .body(Body::empty())
+            .unwrap();
+        assert_eq!(bearer_token(&req).as_deref(), Some("abc"));
+
+        for value in ["Basic abc", "bearer abc", "Bearer", "Token abc"] {
+            let req = Request::builder()
+                .header("authorization", value)
+                .body(Body::empty())
+                .unwrap();
+            assert!(bearer_token(&req).is_none());
+        }
+    }
+}

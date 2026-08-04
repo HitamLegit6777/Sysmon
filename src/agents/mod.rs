@@ -139,6 +139,11 @@ impl AgentRegistry {
     pub fn register(&self, identity: AgentIdentity, rules: &[AlertRuleConfig]) -> Result<(), String> {
         validate_agent_id(&identity.id)?;
         validate_agent_name(&identity.name)?;
+        // Strip control chars from the display name (kept bounded by
+        // validate_agent_name above).
+        let name: String = identity.name.chars().filter(|c| !c.is_control()).collect();
+        let mut identity = identity;
+        identity.name = name;
         let mut agents = self.inner.agents.write();
         if !agents.contains_key(&identity.id) && agents.len() >= self.inner.max_agents {
             return Err("agent limit reached".into());
@@ -169,12 +174,24 @@ impl AgentRegistry {
         }
     }
 
-    /// Attach static host info reported once after connect.
+    /// Attach static host info reported once after connect. String fields are
+    /// sanitized (length-capped, control chars stripped) so a malicious agent
+    /// cannot inject junk into the fleet view, sidebar, or DOM attributes.
     pub fn set_host(&self, id: &str, host: HostInfo) {
+        let clean = |s: &str, max: usize| -> String {
+            s.chars()
+                .take(max)
+                .filter(|c| !c.is_control())
+                .collect()
+        };
         if let Some(a) = self.inner.agents.write().get_mut(id) {
-            a.hostname = host.hostname.clone();
-            a.version = host.sysmon_version.clone();
+            a.hostname = clean(&host.hostname, 128);
+            a.version = clean(&host.sysmon_version, 32);
             a.host = Some(host);
+            if let Some(h) = a.host.as_mut() {
+                h.hostname = a.hostname.clone();
+                h.sysmon_version = a.version.clone();
+            }
         }
     }
 
@@ -210,15 +227,62 @@ impl AgentRegistry {
             .map(|tx| tx.send(frame).is_ok())
             .unwrap_or(false)
     }
+    /// Clamp hostile/out-of-range values from a remote agent before they
+    /// reach the alert engine, history ring, and dashboard broadcasts. A
+    /// malicious (or buggy) agent must not be able to skew alerts, overflow
+    /// charts, or inflate the fleet view.
+    fn sanitize_snapshot(snap: &mut MetricsSnapshot) {
+        // Non-finite or out-of-range remote values are forced into [0, max].
+        let clamp_like = |v: &mut f64, max: f64| {
+            if !v.is_finite() || *v < 0.0 {
+                *v = 0.0;
+            } else if *v > max {
+                *v = max;
+            }
+        };
+        clamp_like(&mut snap.cpu.usage, 100.0);
+        clamp_like(&mut snap.cpu.user, 100.0);
+        clamp_like(&mut snap.cpu.system, 100.0);
+        clamp_like(&mut snap.cpu.iowait, 100.0);
+        clamp_like(&mut snap.cpu.idle, 100.0);
+        clamp_like(&mut snap.memory.used_percent, 100.0);
+        clamp_like(&mut snap.memory.swap_used_percent, 100.0);
+        clamp_like(&mut snap.disk.max_used_percent, 100.0);
+        // Rates: non-negative, bounded to a sane ceiling to avoid absurd
+        // tooltips/charts from a corrupt source.
+        clamp_like(&mut snap.network.total_rx_bytes_per_sec, 1e15);
+        clamp_like(&mut snap.network.total_tx_bytes_per_sec, 1e15);
+        clamp_like(&mut snap.disk.total_read_bytes_per_sec, 1e15);
+        clamp_like(&mut snap.disk.total_write_bytes_per_sec, 1e15);
+        clamp_like(&mut snap.load.load1, 1e9);
+        clamp_like(&mut snap.load.load5, 1e9);
+        clamp_like(&mut snap.load.load15, 1e9);
+        clamp_like(&mut snap.thermal.max_temp, 300.0);
+        clamp_like(&mut snap.thermal.avg_temp, 300.0);
+
+        // Be lenient about per-core rows but cap the count so a malicious
+        // agent cannot push thousands of core entries.
+        if snap.cpu.cores.len() > 1024 {
+            snap.cpu.cores.truncate(1024);
+        }
+        if snap.network.interfaces.len() > 512 {
+            snap.network.interfaces.truncate(512);
+        }
+        if snap.disk.filesystems.len() > 512 {
+            snap.disk.filesystems.truncate(512);
+        }
+    }
+
     /// Ingest a fresh snapshot: store it, append history, evaluate alerts,
     /// and return any new alert transitions (tagged with the server id).
     pub fn ingest_snapshot(
         &self,
         id: &str,
-        snapshot: MetricsSnapshot,
+        mut snapshot: MetricsSnapshot,
         alerts_enabled: bool,
         now_ms: u64,
     ) -> Vec<AgentAlertEvent> {
+        Self::sanitize_snapshot(&mut snapshot);
         let mut agents = self.inner.agents.write();
         let Some(a) = agents.get_mut(id) else {
             return Vec::new();
@@ -226,7 +290,8 @@ impl AgentRegistry {
         a.snapshot = Some(snapshot.clone());
         a.last_seen_ms = now_ms;
         a.connected = true;
-        a.history.push(HistoryPoint::from_snapshot(&snapshot));
+        let point = HistoryPoint::from_snapshot(&snapshot);
+        a.history.push(point);
         if !alerts_enabled {
             return Vec::new();
         }
@@ -247,8 +312,30 @@ impl AgentRegistry {
         }
     }
 
-    /// Replace the process table.
-    pub fn ingest_processes(&self, id: &str, processes: ProcessMetrics, now_ms: u64) {
+    /// Replace the process table after bounding row count and attacker-
+    /// controlled strings. The official agent sends at most 200 rows.
+    pub fn ingest_processes(&self, id: &str, mut processes: ProcessMetrics, now_ms: u64) {
+        processes.processes.truncate(1000);
+        for p in &mut processes.processes {
+            p.name = p.name.chars().filter(|c| !c.is_control()).take(256).collect();
+            p.cmdline = p
+                .cmdline
+                .chars()
+                .filter(|c| !c.is_control() || *c == '\t')
+                .take(4096)
+                .collect();
+            p.user = p.user.chars().filter(|c| !c.is_control()).take(128).collect();
+            if !p.cpu_percent.is_finite() || p.cpu_percent < 0.0 {
+                p.cpu_percent = 0.0;
+            } else if p.cpu_percent > 102_400.0 {
+                p.cpu_percent = 102_400.0;
+            }
+            if !p.mem_percent.is_finite() || p.mem_percent < 0.0 {
+                p.mem_percent = 0.0;
+            } else if p.mem_percent > 100.0 {
+                p.mem_percent = 100.0;
+            }
+        }
         let mut agents = self.inner.agents.write();
         if let Some(a) = agents.get_mut(id) {
             a.processes = Some(processes);
@@ -403,6 +490,73 @@ mod tests {
         assert!(validate_agent_id("bad;drop").is_err());
         assert!(validate_agent_id(&"x".repeat(65)).is_err());
     }
+
+    #[test]
+    fn hostile_snapshot_values_are_clamped() {
+        let reg = AgentRegistry::new(2);
+        reg.register(AgentIdentity { id: "a".into(), name: "A".into() }, &[]).unwrap();
+        let mut s = MetricsSnapshot { timestamp: 1, ..Default::default() };
+        s.cpu.usage = f64::NAN;
+        s.memory.used_percent = 999.0;
+        s.network.total_rx_bytes_per_sec = f64::INFINITY;
+        s.disk.total_read_bytes_per_sec = -5.0;
+        s.thermal.max_temp = 9999.0;
+        s.cpu.cores = vec![Default::default(); 1100];
+        reg.ingest_snapshot("a", s, false, 1);
+        let got = reg.snapshot("a").unwrap();
+        assert_eq!(got.cpu.usage, 0.0);
+        assert_eq!(got.memory.used_percent, 100.0);
+        assert_eq!(got.network.total_rx_bytes_per_sec, 0.0);
+        assert_eq!(got.disk.total_read_bytes_per_sec, 0.0);
+        assert_eq!(got.thermal.max_temp, 300.0);
+        assert_eq!(got.cpu.cores.len(), 1024);
+    }
+
+    #[test]
+    fn hostile_process_table_is_bounded_and_sanitized() {
+        let reg = AgentRegistry::new(2);
+        reg.register(AgentIdentity { id: "a".into(), name: "A".into() }, &[]).unwrap();
+        let bad = crate::state::metrics::ProcessInfo {
+            name: "bad\0name".into(),
+            cmdline: format!("evil\0{}", "x".repeat(5000)),
+            user: "root\u{7}".into(),
+            cpu_percent: f64::INFINITY,
+            mem_percent: 999.0,
+            ..Default::default()
+        };
+        let p = ProcessMetrics { processes: vec![bad; 1100], ..Default::default() };
+        reg.ingest_processes("a", p, 1);
+        let got = reg.processes("a").unwrap();
+        assert_eq!(got.processes.len(), 1000);
+        assert!(!got.processes[0].name.contains('\0'));
+        assert!(got.processes[0].cmdline.len() <= 4096);
+        assert!(!got.processes[0].user.contains('\u{7}'));
+        assert_eq!(got.processes[0].cpu_percent, 0.0);
+        assert_eq!(got.processes[0].mem_percent, 100.0);
+    }
+
+    #[test]
+    fn hostile_host_and_name_control_chars_are_removed() {
+        let reg = AgentRegistry::new(2);
+        reg.register(
+            AgentIdentity { id: "a".into(), name: "Name\nWith\tControls".into() },
+            &[],
+        )
+        .unwrap();
+        let host = HostInfo {
+            hostname: format!("host\0{}", "x".repeat(200)),
+            sysmon_version: "1.0\u{7}".into(),
+            ..Default::default()
+        };
+        reg.set_host("a", host);
+        let got = reg.host("a").unwrap();
+        assert!(!got.hostname.contains('\0'));
+        assert!(got.hostname.chars().count() <= 128);
+        assert!(!got.sysmon_version.contains('\u{7}'));
+        let summary = reg.summaries().remove(0);
+        assert!(!summary.name.chars().any(char::is_control));
+    }
+
 
     #[test]
     fn register_then_ingest_roundtrips() {
